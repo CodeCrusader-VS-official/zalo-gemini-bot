@@ -7,21 +7,22 @@ from zalo_bot import Bot
 
 app = Flask(__name__)
 
-# Đọc API Keys
+# Đọc danh sách API Key (hỗ trợ nhiều key phân cách bằng dấu phẩy)
 RAW_KEYS = os.getenv("GEMINI_API_KEY", "").strip().strip('"').strip("'")
 GEMINI_API_KEYS = [k.strip() for k in RAW_KEYS.split(",") if k.strip()]
-
-DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "").strip().strip('"').strip("'")
 
 ZALO_BOT_TOKEN = os.getenv("ZALO_BOT_TOKEN", "").strip().strip('"').strip("'")
 bot = Bot(token=ZALO_BOT_TOKEN) if ZALO_BOT_TOKEN else None
 
-# Danh sách model Gemini tối ưu quota
-ALL_GEMINI_MODELS = [
+# Bộ danh sách toàn bộ model có Quota > 0 (Xếp từ thông minh nhất đến trâu nhất)
+ALL_MODELS = [
+    # Nhóm Flash chất lượng cao (20 tin/ngày mỗi model)
     "gemini-3.8-flash",
     "gemini-3.6-flash",
     "gemini-3-flash",
     "gemini-2.5-flash",
+    
+    # Nhóm Flash Lite siêu dung lượng (500 tin/ngày mỗi model)
     "gemini-3.5-flash-lite",
     "gemini-3.1-flash-lite",
     "gemini-2.5-flash-lite"
@@ -51,85 +52,47 @@ Luôn tìm ra giải pháp, câu trả lời hoặc cách tiếp cận tốt nh�
 - Đang trò chuyện với người dùng thông qua zalo, không phải wed chính bên ngoài.
 """
 
-def generate_deepseek_response(prompt):
-    """Xử lý gọi API từ DeepSeek (Model: deepseek-chat)"""
-    if not DEEPSEEK_API_KEY:
-        print("Chưa cấu hình DEEPSEEK_API_KEY.")
-        return None
+def generate_gemini_response(prompt):
+    if not GEMINI_API_KEYS:
+        return "Lỗi: Chưa cấu hình GEMINI_API_KEY trên Render."
 
-    url = "https://api.deepseek.com/v1/chat/completions"
-    headers = {
-        "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
-        "Content-Type": "application/json"
-    }
-    payload = {
-        "model": "deepseek-chat",
-        "messages": [
-            {"role": "system", "content": SYSTEM_INSTRUCTION},
-            {"role": "user", "content": prompt}
-        ],
-        "stream": False
-    }
+    keys_to_try = GEMINI_API_KEYS.copy()
+    random.shuffle(keys_to_try)
 
-    try:
-        res = requests.post(url, headers=headers, json=payload, timeout=15)
-        if res.status_code == 200:
-            data = res.json()
-            choices = data.get("choices", [])
-            if choices:
-                return choices[0].get("message", {}).get("content", "")
-        else:
-            print(f"DeepSeek HTTP {res.status_code}: {res.text}")
-    except Exception as e:
-        print(f"Lỗi kết nối DeepSeek: {e}")
+    # Thử qua từng Key và từng Model trong danh sách
+    for api_key in keys_to_try:
+        for model_name in ALL_MODELS:
+            formatted_model = model_name if model_name.startswith("models/") else f"models/{model_name}"
+            url = f"https://generativelanguage.googleapis.com/v1beta/{formatted_model}:generateContent?key={api_key}"
+            headers = {"Content-Type": "application/json"}
+            payload = {
+                "system_instruction": {"parts": [{"text": SYSTEM_INSTRUCTION}]},
+                "contents": [{"parts": [{"text": prompt}]}]
+            }
 
-    return None
-
-def generate_ai_response(prompt):
-    """Ưu tiên chạy toàn bộ Gemini, nếu lỗi/hết quota mới dùng DeepSeek"""
-    # 1. Thử qua toàn bộ Gemini Keys và Models
-    if GEMINI_API_KEYS:
-        keys_to_try = GEMINI_API_KEYS.copy()
-        random.shuffle(keys_to_try)
-
-        for api_key in keys_to_try:
-            for model_name in ALL_GEMINI_MODELS:
-                formatted_model = model_name if model_name.startswith("models/") else f"models/{model_name}"
-                url = f"https://generativelanguage.googleapis.com/v1beta/{formatted_model}:generateContent?key={api_key}"
-                headers = {"Content-Type": "application/json"}
-                payload = {
-                    "system_instruction": {"parts": [{"text": SYSTEM_INSTRUCTION}]},
-                    "contents": [{"parts": [{"text": prompt}]}]
-                }
-
-                try:
-                    res = requests.post(url, headers=headers, json=payload, timeout=10)
-                    if res.status_code == 200:
-                        data = res.json()
-                        candidates = data.get("candidates", [])
-                        if candidates:
-                            parts = candidates[0].get("content", {}).get("parts", [])
-                            if parts and parts[0].get("text"):
-                                return parts[0].get("text")
-                    elif res.status_code in [429, 503, 404]:
-                        continue
-                    else:
-                        print(f"Model {formatted_model} HTTP {res.status_code}: {res.text}")
-                except Exception as e:
-                    print(f"Lỗi kết nối {formatted_model}: {e}")
+            try:
+                res = requests.post(url, headers=headers, json=payload, timeout=10)
+                if res.status_code == 200:
+                    data = res.json()
+                    candidates = data.get("candidates", [])
+                    if candidates:
+                        parts = candidates[0].get("content", {}).get("parts", [])
+                        if parts and parts[0].get("text"):
+                            return parts[0].get("text")
+                elif res.status_code in [429, 503, 404]:
+                    # Nếu hết quota hoặc lỗi bận, tự động chuyển model tiếp theo
                     continue
+                else:
+                    print(f"Model {formatted_model} HTTP {res.status_code}: {res.text}")
+            except Exception as e:
+                print(f"Lỗi kết nối {formatted_model}: {e}")
+                continue
 
-    # 2. Nếu Gemini bất thành, chuyển sang DeepSeek
-    print("-> Tất cả Gemini models/keys đều thất bại. Đang chuyển sang DeepSeek...")
-    ds_reply = generate_deepseek_response(prompt)
-    if ds_reply:
-        return ds_reply
-
-    return "Tiểu Hy hiện đang quá tải lượt hỏi trên toàn bộ hệ thống. Vui lòng thử lại sau ít phút nhé!"
+    return "Tiểu Hy hiện đang quá tải lượt hỏi trên toàn bộ các mô hình. Vui lòng thử lại sau ít phút nhé!"
 
 @app.route('/', methods=['GET'])
 def home():
-    return "Zalo Gemini & DeepSeek Bot is running!"
+    return "Zalo Gemini Bot is running!"
 
 @app.route('/webhook', methods=['POST', 'GET'])
 def webhook():
@@ -139,19 +102,15 @@ def webhook():
     data = request.get_json() or {}
     msg_obj = data.get('message', {})
     sender_id = msg_obj.get('from', {}).get('id') or msg_obj.get('chat', {}).get('id')
-    user_message = msg_obj.get('text', '').strip()
+    user_message = msg_obj.get('text', '')
 
-    # Kiểm tra tiền tố dấu chấm '.'
-    if sender_id and user_message.startswith('.'):
-        actual_prompt = user_message[1:].strip()
-        
-        if actual_prompt:
-            reply_text = generate_ai_response(actual_prompt)
-            if bot:
-                try:
-                    asyncio.run(bot.send_message(chat_id=sender_id, text=reply_text))
-                except Exception as e:
-                    print(f"Lỗi gửi tin nhắn Zalo SDK: {e}")
+    if sender_id and user_message:
+        reply_text = generate_gemini_response(user_message)
+        if bot:
+            try:
+                asyncio.run(bot.send_message(chat_id=sender_id, text=reply_text))
+            except Exception as e:
+                print(f"Lỗi gửi tin nhắn Zalo SDK: {e}")
 
     return jsonify({"status": "success"}), 200
 
