@@ -1,45 +1,63 @@
-import requests
 from flask import Flask, request, jsonify
+import os
+import requests
 import google.generativeai as genai
 
 app = Flask(__name__)
 
-# --- Điền Key của bạn vào 2 dòng bên dưới ---
-ZALO_BOT_TOKEN = "DÁN_ZALO_BOT_TOKEN_CỦA_BẠN_VÀO_ĐÂY"
-GEMINI_API_KEY = "DÁN_GEMINI_API_KEY_VỪA_COPIED_VÀO_ĐÂY"
+# Tự động làm sạch API Key (xóa bỏ khoảng trắng, xuống dòng, dấu ngoặc kép thừa)
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip().strip('"').strip("'")
+ZALO_BOT_TOKEN = os.getenv("ZALO_BOT_TOKEN", "").strip().strip('"').strip("'")
 
-# Cấu hình Gemini
-genai.configure(api_key=GEMINI_API_KEY)
-model = genai.GenerativeModel('gemini-2.5-flash')
+if GEMINI_API_KEY:
+    genai.configure(api_key=GEMINI_API_KEY)
 
-def send_zalo_message(chat_id, text):
-    url = f"https://bot-api.zalo.me/bot{ZALO_BOT_TOKEN}/sendMessage"
-    payload = {
-        "chat_id": chat_id,
-        "text": text
-    }
-    requests.post(url, json=payload)
+@app.route('/', methods=['GET'])
+def home():
+    return "Zalo Gemini Bot is running!"
 
-@app.route('/webhook', methods=['POST'])
+@app.route('/webhook', methods=['POST', 'GET'])
 def webhook():
-    data = request.json
-    
-    if data and "message" in data:
-        chat_id = data["message"]["chat"]["id"]
-        user_text = data["message"].get("text", "")
-        
-        if user_text:
-            try:
-                # Gửi câu hỏi sang Gemini
-                response = model.generate_content(user_text)
-                bot_reply = response.text
-            except Exception as e:
-                bot_reply = "Xin lỗi, hiện tại tôi gặp sự cố khi xử lý dữ liệu."
-            
-            # Gửi phản hồi lại cho người dùng Zalo
-            send_zalo_message(chat_id, bot_reply)
-            
-    return jsonify({"status": "ok"}), 200
+    if request.method == 'GET':
+        return "Webhook active", 200
 
-if __name__ == '__main__':
-    app.run(port=5000)
+    data = request.get_json() or {}
+    
+    # Xử lý sự kiện khi người dùng nhắn tin
+    event_name = data.get('event_name')
+    if event_name == 'user_send_text':
+        sender_id = data.get('sender', {}).get('id')
+        user_message = data.get('message', {}).get('text', '')
+
+        if sender_id and user_message:
+            try:
+                # Gọi model Gemini
+                model = genai.GenerativeModel('gemini-1.5-flash')
+                response = model.generate_content(user_message)
+                reply_text = response.text if response.text else "AI không trả lời."
+            except Exception as e:
+                print(f"Lỗi Gemini API: {e}")
+                reply_text = "Có lỗi xảy ra khi kết nối với AI Gemini. Bạn vui lòng kiểm tra lại GEMINI_API_KEY."
+
+            # Gửi tin nhắn phản hồi về Zalo
+            send_zalo_message(sender_id, reply_text)
+
+    return jsonify({"status": "success"}), 200
+
+def send_zalo_message(recipient_id, message_text):
+    url = "https://openapi.zalo.me/v2.0/oa/message"
+    headers = {
+        "Content-Type": "application/json",
+        "access_token": ZALO_BOT_TOKEN
+    }
+    payload = {
+        "recipient": {"user_id": recipient_id},
+        "message": {"text": message_text}
+    }
+    try:
+        requests.post(url, headers=headers, json=payload, timeout=5)
+    except Exception as e:
+        print(f"Lỗi gửi tin nhắn Zalo: {e}")
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=10000)
