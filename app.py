@@ -7,12 +7,9 @@ app = Flask(__name__)
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip().strip('"').strip("'")
 ZALO_BOT_TOKEN = os.getenv("ZALO_BOT_TOKEN", "").strip().strip('"').strip("'")
 
-# Danh sách tên Model Gemini thế hệ mới được Google hỗ trợ cho API Key của bạn
 PREFERRED_MODELS = [
-    "gemini-3.8-flash",
-    "gemini-2.5-flash-lite",
-    "gemini-flash-latest",
-    "gemini-3.5-flash"
+    "gemini-3.5-flash",
+    "gemini-3.5-flash-lite"
 ]
 
 def generate_gemini_response(prompt):
@@ -24,16 +21,12 @@ def generate_gemini_response(prompt):
         url = f"https://generativelanguage.googleapis.com/v1beta/{formatted_model}:generateContent?key={GEMINI_API_KEY}"
         headers = {"Content-Type": "application/json"}
         payload = {
-            "contents": [
-                {
-                    "parts": [{"text": prompt}]
-                }
-            ]
+            "contents": [{"parts": [{"text": prompt}]}]
         }
 
         try:
             print(f"-> Đang gửi yêu cầu tới Gemini ({formatted_model})...")
-            res = requests.post(url, headers=headers, json=payload, timeout=10)
+            res = requests.post(url, headers=headers, json=payload, timeout=6)
             
             if res.status_code == 200:
                 data = res.json()
@@ -63,12 +56,14 @@ def webhook():
         return "Webhook active", 200
 
     data = request.get_json() or {}
+    print(f"=== Webhook nhận dữ liệu: {data}")
     
     msg_obj = data.get('message', {})
     sender_id = msg_obj.get('from', {}).get('id') or msg_obj.get('chat', {}).get('id')
     user_message = msg_obj.get('text', '')
 
     if sender_id and user_message:
+        print(f"-> Xử lý tin nhắn từ {sender_id}: {user_message}")
         reply_text = generate_gemini_response(user_message)
         send_zalo_message(sender_id, reply_text)
 
@@ -86,7 +81,7 @@ def send_zalo_message(recipient_id, message_text):
     }
     try:
         res = requests.post(url, headers=headers, json=payload, timeout=5)
-        print(f"-> Kết quả gửi Zalo API: Status {res.status_code}")
+        print(f"-> Chi tiết phản hồi từ Zalo API: {res.text}")
     except Exception as e:
         print(f"Lỗi gửi Zalo API: {e}")
 
