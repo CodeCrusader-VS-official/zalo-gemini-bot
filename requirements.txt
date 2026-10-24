@@ -1,4 +1,6 @@
-flask
-requests
-google-generativeai
-gunicorn
+# Danh sách Model chuẩn xác & hoạt động ổn định nhất
+PREFERRED_MODELS = [
+    "gemini-3.5-flash",
+    "gemini-3.5-flash-lite",
+    "gemini-3.8-flash"
+]
