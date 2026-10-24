@@ -7,11 +7,12 @@ app = Flask(__name__)
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip().strip('"').strip("'")
 ZALO_BOT_TOKEN = os.getenv("ZALO_BOT_TOKEN", "").strip().strip('"').strip("'")
 
-# Danh sách Model Gemini ưu tiên gọi trực tiếp qua HTTP REST
+# Danh sách tên Model Gemini thế hệ mới được Google hỗ trợ cho API Key của bạn
 PREFERRED_MODELS = [
-    "gemini-1.5-flash",
-    "gemini-1.5-pro",
-    "gemini-2.0-flash-exp"
+    "gemini-3.8-flash",
+    "gemini-2.5-flash-lite",
+    "gemini-flash-latest",
+    "gemini-3.5-flash"
 ]
 
 def generate_gemini_response(prompt):
@@ -19,7 +20,8 @@ def generate_gemini_response(prompt):
         return "Lỗi: Chưa cấu hình GEMINI_API_KEY trên Render."
 
     for model_name in PREFERRED_MODELS:
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={GEMINI_API_KEY}"
+        formatted_model = model_name if model_name.startswith("models/") else f"models/{model_name}"
+        url = f"https://generativelanguage.googleapis.com/v1beta/{formatted_model}:generateContent?key={GEMINI_API_KEY}"
         headers = {"Content-Type": "application/json"}
         payload = {
             "contents": [
@@ -30,8 +32,8 @@ def generate_gemini_response(prompt):
         }
 
         try:
-            print(f"-> Đang gửi yêu cầu tới Gemini (Model: {model_name})...")
-            res = requests.post(url, headers=headers, json=payload, timeout=8)
+            print(f"-> Đang gửi yêu cầu tới Gemini ({formatted_model})...")
+            res = requests.post(url, headers=headers, json=payload, timeout=10)
             
             if res.status_code == 200:
                 data = res.json()
@@ -41,15 +43,15 @@ def generate_gemini_response(prompt):
                     if parts:
                         reply_text = parts[0].get("text", "")
                         if reply_text:
-                            print(f"-> Phản hồi thành công từ model: {model_name}")
+                            print(f"-> Phản hồi thành công từ model: {formatted_model}")
                             return reply_text
             else:
-                print(f"Model {model_name} trả về lỗi HTTP {res.status_code}: {res.text}")
+                print(f"Model {formatted_model} trả về lỗi HTTP {res.status_code}: {res.text}")
         except Exception as e:
-            print(f"Lỗi kết nối tới model {model_name}: {e}")
+            print(f"Lỗi kết nối tới model {formatted_model}: {e}")
             continue
 
-    return "Lỗi: Không thể kết nối tới AI Gemini. Bạn vui lòng kiểm tra lại GEMINI_API_KEY."
+    return "Lỗi: Không thể kết nối tới AI Gemini. Vui lòng kiểm tra lại GEMINI_API_KEY."
 
 @app.route('/', methods=['GET'])
 def home():
