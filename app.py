@@ -11,27 +11,40 @@ ZALO_BOT_TOKEN = os.getenv("ZALO_BOT_TOKEN", "").strip().strip('"').strip("'")
 if GEMINI_API_KEY:
     genai.configure(api_key=GEMINI_API_KEY)
 
-# Danh sách tên Model Gemini phổ biến để tự động fallback
-MODEL_CANDIDATES = [
-    "gemini-2.5-flash",
-    "gemini-1.5-flash-latest",
-    "gemini-2.0-flash",
-    "models/gemini-1.5-flash",
-    "gemini-pro"
-]
+def get_working_model():
+    """Tự động lấy danh sách model hỗ trợ chat thực tế từ API Key"""
+    try:
+        available_models = []
+        for m in genai.list_models():
+            if 'generateContent' in m.supported_generation_methods:
+                available_models.append(m.name)
+        
+        print(f"-> Danh sách Model khả dụng cho Key của bạn: {available_models}")
+        
+        if available_models:
+            # Ưu tiên lấy model flash nếu có
+            for model_name in available_models:
+                if 'flash' in model_name:
+                    return model_name
+            return available_models[0]
+    except Exception as e:
+        print(f"Lỗi truy vấn danh sách Model từ Gemini API: {e}")
+    return None
 
 def generate_gemini_response(prompt):
-    for model_name in MODEL_CANDIDATES:
-        try:
-            model = genai.GenerativeModel(model_name)
-            response = model.generate_content(prompt)
-            if response and response.text:
-                print(f"-> Đã phản hồi thành công bằng model: {model_name}")
-                return response.text
-        except Exception as e:
-            print(f"Thử model {model_name} không thành công: {e}")
-            continue
-    return "Lỗi: Không tìm thấy model Gemini tương thích với API Key."
+    model_name = get_working_model()
+    if not model_name:
+        return "Lỗi: GEMINI_API_KEY không hợp lệ hoặc chưa được cấp quyền truy cập AI."
+    
+    try:
+        print(f"-> Đang xử lý bằng model: {model_name}")
+        model = genai.GenerativeModel(model_name)
+        response = model.generate_content(prompt)
+        if response and response.text:
+            return response.text
+    except Exception as e:
+        print(f"Lỗi khi tạo phản hồi với model {model_name}: {e}")
+    return "Lỗi: Không thể tạo câu trả lời từ AI Gemini."
 
 @app.route('/', methods=['GET'])
 def home():
