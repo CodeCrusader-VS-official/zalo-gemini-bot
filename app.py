@@ -5,7 +5,6 @@ import google.generativeai as genai
 
 app = Flask(__name__)
 
-# Tự động làm sạch API Key (xóa bỏ khoảng trắng, xuống dòng, dấu ngoặc kép thừa)
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip().strip('"').strip("'")
 ZALO_BOT_TOKEN = os.getenv("ZALO_BOT_TOKEN", "").strip().strip('"').strip("'")
 
@@ -22,25 +21,26 @@ def webhook():
         return "Webhook active", 200
 
     data = request.get_json() or {}
-    
-    # Xử lý sự kiện khi người dùng nhắn tin
+    print("=== TIN NHẮN TỪ ZALO GỬI SANG ===")
+    print(data)
+
     event_name = data.get('event_name')
-    if event_name == 'user_send_text':
-        sender_id = data.get('sender', {}).get('id')
-        user_message = data.get('message', {}).get('text', '')
+    sender_id = data.get('sender', {}).get('id') or data.get('recipient', {}).get('id') or data.get('from', {}).get('id')
+    user_message = data.get('message', {}).get('text', '') or data.get('text', '')
 
-        if sender_id and user_message:
-            try:
-                # Gọi model Gemini
-                model = genai.GenerativeModel('gemini-1.5-flash')
-                response = model.generate_content(user_message)
-                reply_text = response.text if response.text else "AI không trả lời."
-            except Exception as e:
-                print(f"Lỗi Gemini API: {e}")
-                reply_text = "Có lỗi xảy ra khi kết nối với AI Gemini. Bạn vui lòng kiểm tra lại GEMINI_API_KEY."
+    print(f"-> Sender ID: {sender_id} | Message: {user_message}")
 
-            # Gửi tin nhắn phản hồi về Zalo
-            send_zalo_message(sender_id, reply_text)
+    if sender_id and user_message:
+        try:
+            model = genai.GenerativeModel('gemini-1.5-flash')
+            response = model.generate_content(user_message)
+            reply_text = response.text if response.text else "AI không trả lời."
+        except Exception as e:
+            print(f"Lỗi Gemini API: {e}")
+            reply_text = "Lỗi kết nối AI Gemini."
+
+        print(f"-> Gemini Trả Lời: {reply_text}")
+        send_zalo_message(sender_id, reply_text)
 
     return jsonify({"status": "success"}), 200
 
@@ -55,9 +55,11 @@ def send_zalo_message(recipient_id, message_text):
         "message": {"text": message_text}
     }
     try:
-        requests.post(url, headers=headers, json=payload, timeout=5)
+        res = requests.post(url, headers=headers, json=payload, timeout=5)
+        print(f"=== KẾT QUẢ GỬI SANG ZALO: Status {res.status_code} ===")
+        print(res.text)
     except Exception as e:
-        print(f"Lỗi gửi tin nhắn Zalo: {e}")
+        print(f"Lỗi kết nối Zalo API: {e}")
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
