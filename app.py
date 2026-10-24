@@ -1,13 +1,14 @@
 from flask import Flask, request, jsonify
 import os
 import requests
+import time
 
 app = Flask(__name__)
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip().strip('"').strip("'")
 ZALO_BOT_TOKEN = os.getenv("ZALO_BOT_TOKEN", "").strip().strip('"').strip("'")
 
-# Ưu tiên gemini-3.5-flash-lite để phản hồi siêu tốc, tránh timeout
+# Ưu tiên gemini-3.5-flash-lite phản hồi siêu tốc, tránh timeout
 PREFERRED_MODELS = [
     "gemini-3.5-flash-lite",
     "gemini-3.5-flash"
@@ -71,49 +72,23 @@ def send_zalo_message(recipient_id, message_text):
         print("Lỗi: Chưa cấu hình ZALO_BOT_TOKEN.")
         return
 
-    # Kiểm tra loại Token: Personal Bot Token (có dấu ':')
-    if ":" in ZALO_BOT_TOKEN:
-        # Đường dẫn API chuẩn cho Zalo Personal Bot trên tên miền openapi.zalo.me
-        url = f"https://openapi.zalo.me/bot{ZALO_BOT_TOKEN}/sendMessage"
-        payload = {
-            "chat_id": recipient_id,
-            "text": message_text
-        }
+    # Cổng API chuẩn dành riêng cho Zalo Personal Bot Token
+    url = f"https://bot-api.zalo.me/bot{ZALO_BOT_TOKEN}/sendMessage"
+    payload = {
+        "chat_id": recipient_id,
+        "text": message_text
+    }
+
+    # Thử lại tối đa 3 lần nếu gặp lỗi kết nối DNS tạm thời
+    for attempt in range(1, 4):
         try:
             res = requests.post(url, json=payload, timeout=5)
-            print(f"-> Zalo Personal Bot API response: {res.text}")
+            print(f"-> Zalo Personal Bot API response (Lần {attempt}): {res.text}")
             if res.status_code == 200:
                 return
         except Exception as e:
-            print(f"Lỗi gửi Personal Bot API: {e}")
-
-        # Thử thêm định dạng recipient dự phòng
-        payload_alt = {
-            "recipient": {"user_id": recipient_id},
-            "message": {"text": message_text}
-        }
-        try:
-            res_alt = requests.post(url, json=payload_alt, timeout=5)
-            print(f"-> Zalo Personal Bot API (alt) response: {res_alt.text}")
-        except Exception as e:
-            print(f"Lỗi gửi Personal Bot API (alt): {e}")
-
-    else:
-        # Chuẩn Zalo OA Access Token
-        url = "https://openapi.zalo.me/v2.0/oa/message"
-        headers = {
-            "Content-Type": "application/json",
-            "access_token": ZALO_BOT_TOKEN
-        }
-        payload = {
-            "recipient": {"user_id": recipient_id},
-            "message": {"text": message_text}
-        }
-        try:
-            res = requests.post(url, headers=headers, json=payload, timeout=5)
-            print(f"-> Zalo OA API response: {res.text}")
-        except Exception as e:
-            print(f"Lỗi gửi Zalo OA API: {e}")
+            print(f"Lỗi kết nối Zalo API (Lần {attempt}): {e}")
+            time.sleep(1)
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
