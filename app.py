@@ -25,9 +25,7 @@ def generate_gemini_response(prompt):
         }
 
         try:
-            print(f"-> Đang gửi yêu cầu tới Gemini ({formatted_model})...")
             res = requests.post(url, headers=headers, json=payload, timeout=6)
-            
             if res.status_code == 200:
                 data = res.json()
                 candidates = data.get("candidates", [])
@@ -36,12 +34,11 @@ def generate_gemini_response(prompt):
                     if parts:
                         reply_text = parts[0].get("text", "")
                         if reply_text:
-                            print(f"-> Phản hồi thành công từ model: {formatted_model}")
                             return reply_text
             else:
-                print(f"Model {formatted_model} trả về lỗi HTTP {res.status_code}: {res.text}")
+                print(f"Model {formatted_model} HTTP {res.status_code}: {res.text}")
         except Exception as e:
-            print(f"Lỗi kết nối tới model {formatted_model}: {e}")
+            print(f"Lỗi kết nối {formatted_model}: {e}")
             continue
 
     return "Lỗi: Không thể kết nối tới AI Gemini. Vui lòng kiểm tra lại GEMINI_API_KEY."
@@ -56,34 +53,65 @@ def webhook():
         return "Webhook active", 200
 
     data = request.get_json() or {}
-    print(f"=== Webhook nhận dữ liệu: {data}")
+    print(f"=== Webhook receive: {data}")
     
     msg_obj = data.get('message', {})
     sender_id = msg_obj.get('from', {}).get('id') or msg_obj.get('chat', {}).get('id')
     user_message = msg_obj.get('text', '')
 
     if sender_id and user_message:
-        print(f"-> Xử lý tin nhắn từ {sender_id}: {user_message}")
         reply_text = generate_gemini_response(user_message)
         send_zalo_message(sender_id, reply_text)
 
     return jsonify({"status": "success"}), 200
 
 def send_zalo_message(recipient_id, message_text):
-    url = "https://openapi.zalo.me/v2.0/oa/message"
-    headers = {
-        "Content-Type": "application/json",
-        "access_token": ZALO_BOT_TOKEN
-    }
-    payload = {
-        "recipient": {"user_id": recipient_id},
-        "message": {"text": message_text}
-    }
-    try:
-        res = requests.post(url, headers=headers, json=payload, timeout=5)
-        print(f"-> Chi tiết phản hồi từ Zalo API: {res.text}")
-    except Exception as e:
-        print(f"Lỗi gửi Zalo API: {e}")
+    if not ZALO_BOT_TOKEN:
+        print("Lỗi: Chưa cấu hình ZALO_BOT_TOKEN.")
+        return
+
+    # Tự động nhận diện Zalo Personal Bot Token (Zalo Bot Manager)
+    if ":" in ZALO_BOT_TOKEN:
+        url = f"https://bot-api.zalo.me/bot{ZALO_BOT_TOKEN}/sendMessage"
+        payload = {
+            "chat_id": recipient_id,
+            "text": message_text
+        }
+        try:
+            res = requests.post(url, json=payload, timeout=5)
+            print(f"-> Zalo Personal Bot API response: {res.text}")
+            if res.status_code == 200:
+                return
+        except Exception as e:
+            print(f"Lỗi gửi Personal Bot API: {e}")
+
+        # Payload dự phòng
+        payload_alt = {
+            "recipient": {"user_id": recipient_id},
+            "message": {"text": message_text}
+        }
+        try:
+            res = requests.post(url, json=payload_alt, timeout=5)
+            print(f"-> Zalo Personal Bot API (alt) response: {res.text}")
+        except Exception as e:
+            print(f"Lỗi gửi Personal Bot API (alt): {e}")
+
+    else:
+        # Tự động nhận diện Zalo OA Access Token
+        url = "https://openapi.zalo.me/v2.0/oa/message"
+        headers = {
+            "Content-Type": "application/json",
+            "access_token": ZALO_BOT_TOKEN
+        }
+        payload = {
+            "recipient": {"user_id": recipient_id},
+            "message": {"text": message_text}
+        }
+        try:
+            res = requests.post(url, headers=headers, json=payload, timeout=5)
+            print(f"-> Zalo OA API response: {res.text}")
+        except Exception as e:
+            print(f"Lỗi gửi Zalo OA API: {e}")
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
