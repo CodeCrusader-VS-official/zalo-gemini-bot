@@ -1,14 +1,17 @@
+import asyncio
 from flask import Flask, request, jsonify
 import os
 import requests
-import time
+from zalo_bot import Bot
 
 app = Flask(__name__)
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip().strip('"').strip("'")
 ZALO_BOT_TOKEN = os.getenv("ZALO_BOT_TOKEN", "").strip().strip('"').strip("'")
 
-# Ưu tiên gemini-3.5-flash-lite phản hồi siêu tốc, tránh timeout
+# Khởi tạo Bot instance từ SDK python-zalo-bot
+bot = Bot(token=ZALO_BOT_TOKEN) if ZALO_BOT_TOKEN else None
+
 PREFERRED_MODELS = [
     "gemini-3.5-flash-lite",
     "gemini-3.5-flash"
@@ -63,32 +66,18 @@ def webhook():
 
     if sender_id and user_message:
         reply_text = generate_gemini_response(user_message)
-        send_zalo_message(sender_id, reply_text)
+        
+        if bot:
+            try:
+                # Tận dụng phương thức async send_message từ SDK python-zalo-bot
+                asyncio.run(bot.send_message(chat_id=sender_id, text=reply_text))
+                print(f"-> Gửi thành công qua SDK tới chat_id: {sender_id}")
+            except Exception as e:
+                print(f"Lỗi gửi tin nhắn qua SDK python-zalo-bot: {e}")
+        else:
+            print("Lỗi: Chưa cấu hình ZALO_BOT_TOKEN.")
 
     return jsonify({"status": "success"}), 200
-
-def send_zalo_message(recipient_id, message_text):
-    if not ZALO_BOT_TOKEN:
-        print("Lỗi: Chưa cấu hình ZALO_BOT_TOKEN.")
-        return
-
-    # Cổng API chuẩn dành riêng cho Zalo Personal Bot Token
-    url = f"https://bot-api.zalo.me/bot{ZALO_BOT_TOKEN}/sendMessage"
-    payload = {
-        "chat_id": recipient_id,
-        "text": message_text
-    }
-
-    # Thử lại tối đa 3 lần nếu gặp lỗi kết nối DNS tạm thời
-    for attempt in range(1, 4):
-        try:
-            res = requests.post(url, json=payload, timeout=5)
-            print(f"-> Zalo Personal Bot API response (Lần {attempt}): {res.text}")
-            if res.status_code == 200:
-                return
-        except Exception as e:
-            print(f"Lỗi kết nối Zalo API (Lần {attempt}): {e}")
-            time.sleep(1)
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
