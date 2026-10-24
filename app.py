@@ -7,9 +7,10 @@ app = Flask(__name__)
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip().strip('"').strip("'")
 ZALO_BOT_TOKEN = os.getenv("ZALO_BOT_TOKEN", "").strip().strip('"').strip("'")
 
+# Ưu tiên gemini-3.5-flash-lite để phản hồi siêu tốc, tránh timeout
 PREFERRED_MODELS = [
-    "gemini-3.5-flash",
-    "gemini-3.5-flash-lite"
+    "gemini-3.5-flash-lite",
+    "gemini-3.5-flash"
 ]
 
 def generate_gemini_response(prompt):
@@ -25,7 +26,7 @@ def generate_gemini_response(prompt):
         }
 
         try:
-            res = requests.post(url, headers=headers, json=payload, timeout=6)
+            res = requests.post(url, headers=headers, json=payload, timeout=10)
             if res.status_code == 200:
                 data = res.json()
                 candidates = data.get("candidates", [])
@@ -70,10 +71,13 @@ def send_zalo_message(recipient_id, message_text):
         print("Lỗi: Chưa cấu hình ZALO_BOT_TOKEN.")
         return
 
+    # Tách lấy token thực sự sau dấu ':' (loại bỏ phần ID ở đầu)
+    clean_token = ZALO_BOT_TOKEN.split(":")[-1].strip()
+
     url = "https://openapi.zalo.me/v2.0/oa/message"
     headers = {
         "Content-Type": "application/json",
-        "access_token": ZALO_BOT_TOKEN
+        "access_token": clean_token
     }
     payload = {
         "recipient": {"user_id": recipient_id},
@@ -84,9 +88,9 @@ def send_zalo_message(recipient_id, message_text):
         res = requests.post(url, headers=headers, json=payload, timeout=5)
         print(f"-> Zalo API response: {res.text}")
         
-        # Nếu truyền qua Header báo lỗi, tự động thử lại phương thức truyền qua URL Param
+        # Thử thêm phương thức truyền Token qua Query Parameter nếu Header chưa nhận
         if "error" in res.text and res.json().get("error") != 0:
-            url_param = f"https://openapi.zalo.me/v2.0/oa/message?access_token={ZALO_BOT_TOKEN}"
+            url_param = f"https://openapi.zalo.me/v2.0/oa/message?access_token={clean_token}"
             res_param = requests.post(url_param, json=payload, timeout=5)
             print(f"-> Zalo API (param) response: {res_param.text}")
     except Exception as e:
