@@ -2,22 +2,32 @@ import asyncio
 from flask import Flask, request, jsonify
 import os
 import requests
+import random
 from zalo_bot import Bot
 
 app = Flask(__name__)
 
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip().strip('"').strip("'")
-ZALO_BOT_TOKEN = os.getenv("ZALO_BOT_TOKEN", "").strip().strip('"').strip("'")
+# Đọc danh sách API Key (hỗ trợ nhiều key phân cách bằng dấu phẩy)
+RAW_KEYS = os.getenv("GEMINI_API_KEY", "").strip().strip('"').strip("'")
+GEMINI_API_KEYS = [k.strip() for k in RAW_KEYS.split(",") if k.strip()]
 
-# Khởi tạo Bot instance từ SDK python-zalo-bot
+ZALO_BOT_TOKEN = os.getenv("ZALO_BOT_TOKEN", "").strip().strip('"').strip("'")
 bot = Bot(token=ZALO_BOT_TOKEN) if ZALO_BOT_TOKEN else None
 
-PREFERRED_MODELS = [
+# Bộ danh sách toàn bộ model có Quota > 0 (Xếp từ thông minh nhất đến trâu nhất)
+ALL_MODELS = [
+    # Nhóm Flash chất lượng cao (20 tin/ngày mỗi model)
+    "gemini-3.8-flash",
+    "gemini-3.6-flash",
+    "gemini-3-flash",
+    "gemini-2.5-flash",
+    
+    # Nhóm Flash Lite siêu dung lượng (500 tin/ngày mỗi model)
     "gemini-3.5-flash-lite",
-    "gemini-3.5-flash"
+    "gemini-3.1-flash-lite",
+    "gemini-2.5-flash-lite"
 ]
 
-# Hồ sơ nhân vật & Hệ quy chuẩn ứng xử của Tiểu Hy
 SYSTEM_INSTRUCTION = """
 1. DANH TÍNH & VAI TRÒ
 - Tên gọi: Tiểu Hy.
@@ -40,39 +50,42 @@ Luôn tìm ra giải pháp, câu trả lời hoặc cách tiếp cận tốt nh�
 """
 
 def generate_gemini_response(prompt):
-    if not GEMINI_API_KEY:
+    if not GEMINI_API_KEYS:
         return "Lỗi: Chưa cấu hình GEMINI_API_KEY trên Render."
 
-    for model_name in PREFERRED_MODELS:
-        formatted_model = model_name if model_name.startswith("models/") else f"models/{model_name}"
-        url = f"https://generativelanguage.googleapis.com/v1beta/{formatted_model}:generateContent?key={GEMINI_API_KEY}"
-        headers = {"Content-Type": "application/json"}
-        
-        payload = {
-            "system_instruction": {
-                "parts": [{"text": SYSTEM_INSTRUCTION}]
-            },
-            "contents": [{"parts": [{"text": prompt}]}]
-        }
+    keys_to_try = GEMINI_API_KEYS.copy()
+    random.shuffle(keys_to_try)
 
-        try:
-            res = requests.post(url, headers=headers, json=payload, timeout=12)
-            if res.status_code == 200:
-                data = res.json()
-                candidates = data.get("candidates", [])
-                if candidates:
-                    parts = candidates[0].get("content", {}).get("parts", [])
-                    if parts:
-                        reply_text = parts[0].get("text", "")
-                        if reply_text:
-                            return reply_text
-            else:
-                print(f"Model {formatted_model} HTTP {res.status_code}: {res.text}")
-        except Exception as e:
-            print(f"Lỗi kết nối {formatted_model}: {e}")
-            continue
+    # Thử qua từng Key và từng Model trong danh sách
+    for api_key in keys_to_try:
+        for model_name in ALL_MODELS:
+            formatted_model = model_name if model_name.startswith("models/") else f"models/{model_name}"
+            url = f"https://generativelanguage.googleapis.com/v1beta/{formatted_model}:generateContent?key={api_key}"
+            headers = {"Content-Type": "application/json"}
+            payload = {
+                "system_instruction": {"parts": [{"text": SYSTEM_INSTRUCTION}]},
+                "contents": [{"parts": [{"text": prompt}]}]
+            }
 
-    return "Lỗi: Không thể kết nối tới AI Gemini. Vui lòng kiểm tra lại GEMINI_API_KEY."
+            try:
+                res = requests.post(url, headers=headers, json=payload, timeout=10)
+                if res.status_code == 200:
+                    data = res.json()
+                    candidates = data.get("candidates", [])
+                    if candidates:
+                        parts = candidates[0].get("content", {}).get("parts", [])
+                        if parts and parts[0].get("text"):
+                            return parts[0].get("text")
+                elif res.status_code in [429, 503, 404]:
+                    # Nếu hết quota hoặc lỗi bận, tự động chuyển model tiếp theo
+                    continue
+                else:
+                    print(f"Model {formatted_model} HTTP {res.status_code}: {res.text}")
+            except Exception as e:
+                print(f"Lỗi kết nối {formatted_model}: {e}")
+                continue
+
+    return "Tiểu Hy hiện đang quá tải lượt hỏi trên toàn bộ các mô hình. Vui lòng thử lại sau ít phút nhé!"
 
 @app.route('/', methods=['GET'])
 def home():
@@ -84,23 +97,17 @@ def webhook():
         return "Webhook active", 200
 
     data = request.get_json() or {}
-    print(f"=== Webhook receive: {data}")
-    
     msg_obj = data.get('message', {})
     sender_id = msg_obj.get('from', {}).get('id') or msg_obj.get('chat', {}).get('id')
     user_message = msg_obj.get('text', '')
 
     if sender_id and user_message:
         reply_text = generate_gemini_response(user_message)
-        
         if bot:
             try:
                 asyncio.run(bot.send_message(chat_id=sender_id, text=reply_text))
-                print(f"-> Gửi thành công qua SDK tới chat_id: {sender_id}")
             except Exception as e:
-                print(f"Lỗi gửi tin nhắn qua SDK python-zalo-bot: {e}")
-        else:
-            print("Lỗi: Chưa cấu hình ZALO_BOT_TOKEN.")
+                print(f"Lỗi gửi tin nhắn Zalo SDK: {e}")
 
     return jsonify({"status": "success"}), 200
 
