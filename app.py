@@ -71,30 +71,49 @@ def send_zalo_message(recipient_id, message_text):
         print("Lỗi: Chưa cấu hình ZALO_BOT_TOKEN.")
         return
 
-    # Tách lấy token thực sự sau dấu ':' (loại bỏ phần ID ở đầu)
-    clean_token = ZALO_BOT_TOKEN.split(":")[-1].strip()
+    # Kiểm tra loại Token: Personal Bot Token (có dấu ':')
+    if ":" in ZALO_BOT_TOKEN:
+        # Đường dẫn API chuẩn cho Zalo Personal Bot trên tên miền openapi.zalo.me
+        url = f"https://openapi.zalo.me/bot{ZALO_BOT_TOKEN}/sendMessage"
+        payload = {
+            "chat_id": recipient_id,
+            "text": message_text
+        }
+        try:
+            res = requests.post(url, json=payload, timeout=5)
+            print(f"-> Zalo Personal Bot API response: {res.text}")
+            if res.status_code == 200:
+                return
+        except Exception as e:
+            print(f"Lỗi gửi Personal Bot API: {e}")
 
-    url = "https://openapi.zalo.me/v2.0/oa/message"
-    headers = {
-        "Content-Type": "application/json",
-        "access_token": clean_token
-    }
-    payload = {
-        "recipient": {"user_id": recipient_id},
-        "message": {"text": message_text}
-    }
-    
-    try:
-        res = requests.post(url, headers=headers, json=payload, timeout=5)
-        print(f"-> Zalo API response: {res.text}")
-        
-        # Thử thêm phương thức truyền Token qua Query Parameter nếu Header chưa nhận
-        if "error" in res.text and res.json().get("error") != 0:
-            url_param = f"https://openapi.zalo.me/v2.0/oa/message?access_token={clean_token}"
-            res_param = requests.post(url_param, json=payload, timeout=5)
-            print(f"-> Zalo API (param) response: {res_param.text}")
-    except Exception as e:
-        print(f"Lỗi gửi Zalo API: {e}")
+        # Thử thêm định dạng recipient dự phòng
+        payload_alt = {
+            "recipient": {"user_id": recipient_id},
+            "message": {"text": message_text}
+        }
+        try:
+            res_alt = requests.post(url, json=payload_alt, timeout=5)
+            print(f"-> Zalo Personal Bot API (alt) response: {res_alt.text}")
+        except Exception as e:
+            print(f"Lỗi gửi Personal Bot API (alt): {e}")
+
+    else:
+        # Chuẩn Zalo OA Access Token
+        url = "https://openapi.zalo.me/v2.0/oa/message"
+        headers = {
+            "Content-Type": "application/json",
+            "access_token": ZALO_BOT_TOKEN
+        }
+        payload = {
+            "recipient": {"user_id": recipient_id},
+            "message": {"text": message_text}
+        }
+        try:
+            res = requests.post(url, headers=headers, json=payload, timeout=5)
+            print(f"-> Zalo OA API response: {res.text}")
+        except Exception as e:
+            print(f"Lỗi gửi Zalo OA API: {e}")
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
