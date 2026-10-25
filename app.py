@@ -8,6 +8,7 @@ import uuid
 import threading
 import io
 import re
+import time
 from PIL import Image
 
 app = Flask(__name__)
@@ -76,7 +77,7 @@ def send_zalo_message(chat_id, text):
         print(f"Lỗi kết nối sendMessage: {e}")
 
 def send_zalo_photo(chat_id, photo_url, caption=""):
-    """Gửi tin nhắn hình ảnh chuẩn API sendPhoto Zalo"""
+    """Gửi tin nhắn hình ảnh trực tiếp lên Zalo (Thử lại 2 lần nếu lỗi)"""
     if not ZALO_BOT_TOKEN:
         return False
     url = f"https://bot-api.zaloplatforms.com/bot{ZALO_BOT_TOKEN}/sendPhoto"
@@ -85,19 +86,22 @@ def send_zalo_photo(chat_id, photo_url, caption=""):
         "photo": photo_url,
         "caption": caption
     }
-    try:
-        res = requests.post(url, json=payload, timeout=15)
-        print(f"[ZALO sendPhoto LOG] HTTP {res.status_code}: {res.text}")
-        return res.status_code == 200 and res.json().get('ok') is True
-    except Exception as e:
-        print(f"Lỗi kết nối sendPhoto: {e}")
+    
+    for attempt in range(2):
+        try:
+            res = requests.post(url, json=payload, timeout=20)
+            print(f"[ZALO sendPhoto LOG - Lần {attempt+1}] HTTP {res.status_code}: {res.text}")
+            if res.status_code == 200 and res.json().get('ok') is True:
+                return True
+        except Exception as e:
+            print(f"Lỗi gửi photo lần {attempt+1}: {e}")
+        time.sleep(1)
+        
     return False
 
 def clean_user_prompt(text):
     """Lọc sạch tag @Bot và từ khóa tạo ảnh thừa"""
-    # Xóa các thẻ mention @...
     cleaned = re.sub(r'@[^\s]+', '', text)
-    # Lọc từ khóa lệnh
     cleaned_lower = cleaned.lower()
     for kw in ["tạo ảnh", "vẽ ảnh", "vẽ cho tôi", "vẽ cho", "vẽ ", "tạo hình", "draw", "generate image"]:
         cleaned_lower = cleaned_lower.replace(kw, "")
@@ -117,14 +121,12 @@ def translate_to_english_prompt(text):
     return text
 
 def async_handle_image_generation(chat_id, raw_user_text, base_url):
-    """Xử lý tạo ảnh ngầm có Retry và cắt bớt logo"""
+    """Xử lý tạo ảnh ngầm - Ép gửi trực tiếp hình ảnh, tuyệt đối không gửi URL link"""
     try:
-        # Lọc sạch prompt
         clean_text = clean_user_prompt(raw_user_text)
         en_prompt = translate_to_english_prompt(clean_text)
         encoded_prompt = urllib.parse.quote(en_prompt)
         
-        # Thử lại tối đa 2 lần nếu Pollinations phản hồi chậm
         res = None
         for attempt in range(2):
             try:
@@ -158,10 +160,11 @@ def async_handle_image_generation(chat_id, raw_user_text, base_url):
             
             photo_cdn_url = f"{base_url}/cdn/{img_id}.jpg"
             caption_msg = f"Bức ảnh '{clean_text}' của bạn đây nhé!"
-            success = send_zalo_photo(chat_id, photo_cdn_url, caption=caption_msg)
             
+            # Gửi ảnh trực tiếp
+            success = send_zalo_photo(chat_id, photo_cdn_url, caption=caption_msg)
             if not success:
-                send_zalo_message(chat_id, f"Ảnh '{clean_text}' đã tạo xong, bạn có thể xem tại đây: {photo_cdn_url}")
+                send_zalo_message(chat_id, "Tiểu Hy vẽ xong ảnh rồi nhưng kết nối gửi ảnh tới Zalo bị chập chờn. Bạn bấm gửi lại lệnh giúp Tiểu Hy nhé!")
         else:
             send_zalo_message(chat_id, "Server vẽ ảnh hiện đang bận chút, bạn thử bấm gửi lại lệnh xem sao nhé!")
     except Exception as e:
