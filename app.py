@@ -82,7 +82,6 @@ def generate_gemini_response(prompt):
                         if parts and parts[0].get("text"):
                             return parts[0].get("text")
                 elif res.status_code in [429, 503, 404]:
-                    # Nếu hết quota hoặc lỗi bận, tự động chuyển model tiếp theo
                     continue
                 else:
                     print(f"Model {formatted_model} HTTP {res.status_code}: {res.text}")
@@ -103,14 +102,16 @@ def webhook():
 
     data = request.get_json() or {}
     msg_obj = data.get('message', {})
-    sender_id = msg_obj.get('from', {}).get('id') or msg_obj.get('chat', {}).get('id')
+    
+    # Ưu tiên chat.id để phản hồi đúng vào Nhóm chat (hoặc chat riêng)
+    target_chat_id = msg_obj.get('chat', {}).get('id') or msg_obj.get('from', {}).get('id')
     user_message = msg_obj.get('text', '')
 
-    if sender_id and user_message:
+    if target_chat_id and user_message:
         reply_text = generate_gemini_response(user_message)
         if bot:
             try:
-                asyncio.run(bot.send_message(chat_id=sender_id, text=reply_text))
+                asyncio.run(bot.send_message(chat_id=target_chat_id, text=reply_text))
             except Exception as e:
                 print(f"Lỗi gửi tin nhắn Zalo SDK: {e}")
 
