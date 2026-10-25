@@ -173,27 +173,43 @@ def async_handle_image_generation(chat_id, raw_user_text, base_url):
         send_zalo_message(chat_id, "Rất tiếc, hệ thống tạo ảnh đang gặp sự cố nhỏ. Bạn thử lại sau ít phút nhé!")
 
 def extract_photo_url(data):
-    """Quét đệ quy toàn bộ gói JSON Webhook để bắt trọn link ảnh (Gửi trực tiếp hoặc Quote)"""
+    """Quét đệ quy thông minh tìm URL ảnh, loại trừ Avatar và hỗ trợ tên miền Zalo zdn.vn"""
+    if not data:
+        return None
+
     if isinstance(data, str) and (data.startswith("http://") or data.startswith("https://")):
         lower_s = data.lower()
-        if any(k in lower_s for k in ['.jpg', '.jpeg', '.png', '.webp', 'zapps', 'zadn', 'photo', 'image', 'thumb', 'cdn']):
+        valid_keywords = ['.jpg', '.jpeg', '.png', '.webp', 'zapps', 'zadn', 'zdn', 'photo', 'image', 'thumb', 'cdn', 'media']
+        if any(k in lower_s for k in valid_keywords):
             return data
+
     elif isinstance(data, dict):
-        for key in ['url', 'src', 'href', 'photo', 'image', 'link', 'media_url', 'thumb', 'thumbnail', 'preview', 'cdn']:
+        ignored_keys = ['avatar', 'avatar_url', 'profile', 'user_avatar', 'chat_avatar', 'icon']
+        photo_keys = ['photo', 'image', 'thumb', 'thumbnail', 'preview', 'cdn', 'url', 'src', 'href', 'media_url']
+        
+        for key in photo_keys:
+            if key in ignored_keys:
+                continue
             val = data.get(key)
             if isinstance(val, str) and (val.startswith("http://") or val.startswith("https://")):
                 lower_v = val.lower()
-                if any(k in lower_v for k in ['.jpg', '.jpeg', '.png', '.webp', 'zapps', 'zadn', 'photo', 'image', 'thumb', 'cdn']):
+                valid_keywords = ['.jpg', '.jpeg', '.png', '.webp', 'zapps', 'zadn', 'zdn', 'photo', 'image', 'thumb', 'cdn', 'media']
+                if any(k in lower_v for k in valid_keywords):
                     return val
-        for val in data.values():
+
+        for key, val in data.items():
+            if key in ignored_keys:
+                continue
             res = extract_photo_url(val)
             if res:
                 return res
+
     elif isinstance(data, list):
         for item in data:
             res = extract_photo_url(item)
             if res:
                 return res
+
     return None
 
 def fetch_media_as_base64(url, is_image=False):
@@ -283,8 +299,9 @@ def webhook():
 
     try:
         data = request.get_json() or {}
-        msg_obj = data.get('message', {})
+        print(f"[WEBHOOK INCOMING LOG]: {data}")
         
+        msg_obj = data.get('message', {})
         chat_id = msg_obj.get('chat', {}).get('id') or msg_obj.get('from', {}).get('id')
         if not chat_id:
             return jsonify({"status": "no_chat_id"}), 200
@@ -293,8 +310,8 @@ def webhook():
         sticker_id = msg_obj.get('sticker') or msg_obj.get('sticker_id')
         voice_url = msg_obj.get('voice_url') or msg_obj.get('voice')
         
-        # SỬA QUAN TRỌNG: Quét đệ quy TOÀN BỘ JSON `data` (Bắt cả ảnh gửi thẳng lẫn ảnh trích dẫn/reply)
-        img_url = extract_photo_url(data)
+        # Quét ưu tiên trong tin nhắn & trích dẫn trước
+        img_url = extract_photo_url(msg_obj) or extract_photo_url(data)
 
         text_lower = user_text.lower().strip()
         img_keywords = ["vẽ ", "tạo ảnh", "tạo hình", "vẽ ảnh", "vẽ cho", "draw ", "generate image"]
@@ -316,7 +333,7 @@ def webhook():
             send_zalo_action(chat_id, "typing")
             media_file = fetch_media_as_base64(voice_url, is_image=False)
             if media_file:
-                prompt = "Lắng hệ tin nhắn thoại này và phản hồi người dùng bằng văn bản:"
+                prompt = "Lắng nghe tin nhắn thoại này và phản hồi người dùng bằng văn bản:"
                 reply_text = generate_gemini_multimodal(prompt, media_file=media_file)
                 send_zalo_message(chat_id, reply_text)
 
