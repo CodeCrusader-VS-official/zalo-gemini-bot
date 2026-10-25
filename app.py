@@ -7,8 +7,6 @@ import urllib.parse
 import uuid
 import threading
 import io
-import re
-import time
 from PIL import Image
 
 app = Flask(__name__)
@@ -77,7 +75,7 @@ def send_zalo_message(chat_id, text):
         print(f"Lỗi kết nối sendMessage: {e}")
 
 def send_zalo_photo(chat_id, photo_url, caption=""):
-    """Gửi tin nhắn hình ảnh chuẩn API sendPhoto Zalo (Thử lại 2 lần)"""
+    """Gửi tin nhắn hình ảnh chuẩn API sendPhoto Zalo"""
     if not ZALO_BOT_TOKEN:
         return False
     url = f"https://bot-api.zaloplatforms.com/bot{ZALO_BOT_TOKEN}/sendPhoto"
@@ -86,30 +84,13 @@ def send_zalo_photo(chat_id, photo_url, caption=""):
         "photo": photo_url,
         "caption": caption
     }
-    for attempt in range(2):
-        try:
-            res = requests.post(url, json=payload, timeout=20)
-            print(f"[ZALO sendPhoto LOG] HTTP {res.status_code}: {res.text}")
-            if res.status_code == 200 and res.json().get('ok') is True:
-                return True
-        except Exception as e:
-            print(f"Lỗi kết nối sendPhoto lần {attempt+1}: {e}")
-        time.sleep(1)
+    try:
+        res = requests.post(url, json=payload, timeout=15)
+        print(f"[ZALO sendPhoto LOG] HTTP {res.status_code}: {res.text}")
+        return res.status_code == 200 and res.json().get('ok') is True
+    except Exception as e:
+        print(f"Lỗi kết nối sendPhoto: {e}")
     return False
-
-def clean_user_prompt(text):
-    """Lọc sạch tag @Bot và từ khóa tạo ảnh thừa"""
-    cleaned = re.sub(r'@[^\s]+', '', text)
-    cleaned_lower = cleaned.lower()
-    for kw in ["tạo ảnh", "vẽ ảnh", "vẽ cho tôi", "vẽ cho", "vẽ ", "tạo hình", "draw", "generate image"]:
-        cleaned_lower = cleaned_lower.replace(kw, "")
-    
-    result = cleaned_lower.strip()
-    return result if result else text
-
-def clean_mention(text):
-    """Xóa các thẻ @mention khỏi câu hỏi để gửi prompt sạch sang Gemini"""
-    return re.sub(r'@[^\s]+', '', text).strip()
 
 def translate_to_english_prompt(text):
     """Dùng Gemini dịch nhanh yêu cầu tạo ảnh sang Tiếng Anh để Pollinations vẽ chính xác"""
@@ -122,28 +103,20 @@ def translate_to_english_prompt(text):
         print(f"Lỗi dịch prompt: {e}")
     return text
 
-def async_handle_image_generation(chat_id, raw_user_text, base_url):
+def async_handle_image_generation(chat_id, user_text, base_url):
     """Xử lý tạo ảnh ngầm và tự động cắt bỏ dải Logo mép dưới"""
     try:
-        clean_text = clean_user_prompt(raw_user_text)
-        en_prompt = translate_to_english_prompt(clean_text)
+        en_prompt = translate_to_english_prompt(user_text)
         encoded_prompt = urllib.parse.quote(en_prompt)
         
-        res = None
-        for attempt in range(2):
-            try:
-                poll_url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=800&height=800&seed={random.randint(1, 999999)}"
-                headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
-                res = requests.get(poll_url, headers=headers, timeout=25)
-                if res.status_code == 200 and res.content:
-                    break
-            except Exception as req_err:
-                print(f"Lần thử {attempt+1} lấy ảnh thất bại: {req_err}")
-
-        if res and res.status_code == 200 and res.content:
+        poll_url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=800&height=800&seed={random.randint(1, 999999)}"
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+        res = requests.get(poll_url, headers=headers, timeout=25)
+        
+        if res.status_code == 200 and res.content:
             final_bytes = res.content
             
-            # Cắt 45px mép dưới xóa logo
+            # Tự động cắt bỏ 45px mép dưới cùng để xóa sạch Watermark/Logo
             try:
                 img = Image.open(io.BytesIO(res.content))
                 width, height = img.size
@@ -161,58 +134,36 @@ def async_handle_image_generation(chat_id, raw_user_text, base_url):
             IMAGE_CACHE[img_id] = final_bytes
             
             photo_cdn_url = f"{base_url}/cdn/{img_id}.jpg"
-            caption_msg = f"Bức ảnh '{clean_text}' của bạn đây nhé!"
+            success = send_zalo_photo(chat_id, photo_cdn_url, caption=f"Bức ảnh '{user_text}' của bạn đây nhé!")
             
-            success = send_zalo_photo(chat_id, photo_cdn_url, caption=caption_msg)
             if not success:
-                send_zalo_message(chat_id, "Tiểu Hy vẽ xong ảnh rồi nhưng kết nối gửi ảnh tới Zalo bị chập chờn. Bạn bấm gửi lại lệnh giúp Tiểu Hy nhé!")
+                send_zalo_message(chat_id, f"Ảnh '{user_text}' đã tạo xong, bạn có thể xem tại đây: {photo_cdn_url}")
         else:
-            send_zalo_message(chat_id, "Server vẽ ảnh hiện đang bận chút, bạn thử bấm gửi lại lệnh xem sao nhé!")
+            send_zalo_message(chat_id, "Tiểu Hy không thể tạo được bức ảnh này lúc này, bạn thử đổi mô tả khác xem sao nhé!")
     except Exception as e:
         print(f"Lỗi tạo ảnh ngầm: {e}")
         send_zalo_message(chat_id, "Rất tiếc, hệ thống tạo ảnh đang gặp sự cố nhỏ. Bạn thử lại sau ít phút nhé!")
 
 def extract_photo_url(data):
-    """Lấy đúng URL ảnh tin nhắn/trích dẫn, loại trừ triệt để Avatar người dùng"""
-    if not data:
-        return None
-
-    # 1. Nếu data là chuỗi URL
+    """Quét tự động tìm URL hình ảnh trong dữ liệu Zalo gửi về"""
     if isinstance(data, str) and (data.startswith("http://") or data.startswith("https://")):
         lower_s = data.lower()
-        # Loại bỏ các URL Avatar hoặc Profile
-        if any(bad in lower_s for bad in ['avatar', 'profile', 'icon', 'default_user', 'ava-talk', 'zaloprofile']):
-            return None
-        return data
-
-    # 2. Nếu data là dict
+        if any(k in lower_s for k in ['.jpg', '.jpeg', '.png', '.webp', 'zapps', 'zadn', 'photo', 'image']):
+            return data
     elif isinstance(data, dict):
-        user_info_keys = ['sender', 'from', 'user', 'recipient', 'author', 'profile', 'member']
-        photo_keys = ['photo', 'image', 'thumb', 'thumbnail', 'preview', 'cdn', 'url', 'src', 'href', 'media_url', 'attachment', 'attachments', 'payload']
-
-        # Bước A: Thử lấy trực tiếp các key ảnh
-        for key in photo_keys:
-            if key in data:
-                val = data[key]
-                res = extract_photo_url(val)
-                if res:
-                    return res
-
-        # Bước B: Đệ quy vào các key còn lại (bỏ qua thông tin cá nhân/avatar)
-        for key, val in data.items():
-            if key.lower() in user_info_keys or any(u in key.lower() for u in ['avatar', 'profile', 'user']):
-                continue
+        for key in ['url', 'src', 'href', 'photo', 'image', 'link', 'media_url']:
+            val = data.get(key)
+            if isinstance(val, str) and (val.startswith("http://") or val.startswith("https://")):
+                return val
+        for val in data.values():
             res = extract_photo_url(val)
             if res:
                 return res
-
-    # 3. Nếu data là list
     elif isinstance(data, list):
         for item in data:
             res = extract_photo_url(item)
             if res:
                 return res
-
     return None
 
 def fetch_media_as_base64(url, is_image=False):
@@ -311,16 +262,7 @@ def webhook():
         user_text = msg_obj.get('text') or msg_obj.get('caption') or ''
         sticker_id = msg_obj.get('sticker') or msg_obj.get('sticker_id')
         voice_url = msg_obj.get('voice_url') or msg_obj.get('voice')
-        
-        # BƯỚC QUAN TRỌNG: Ưu tiên bóc ảnh trong nhánh trích dẫn (quote) trước
-        quote_obj = msg_obj.get('quote') or msg_obj.get('quote_message') or msg_obj.get('reply_to') or data.get('quote')
-        img_url = extract_photo_url(quote_obj) if quote_obj else None
-        
-        # Nếu không có quote, mới tìm trong tin nhắn chính
-        if not img_url:
-            img_url = extract_photo_url(msg_obj)
-        if not img_url:
-            img_url = extract_photo_url(data)
+        img_url = extract_photo_url(msg_obj)
 
         text_lower = user_text.lower().strip()
         img_keywords = ["vẽ ", "tạo ảnh", "tạo hình", "vẽ ảnh", "vẽ cho", "draw ", "generate image"]
@@ -328,9 +270,7 @@ def webhook():
         # 1. XỬ LÝ TẠO ÁNH AI BẤT ĐỒNG BỘ
         if any(kw in text_lower for kw in img_keywords) and not img_url and not voice_url:
             send_zalo_action(chat_id, "typing")
-            
-            clean_display_text = clean_user_prompt(user_text)
-            send_zalo_message(chat_id, f"Tiểu Hy đang vẽ ảnh '{clean_display_text}', bạn đợi vài giây nhé...")
+            send_zalo_message(chat_id, f"Tiểu Hy đang vẽ ảnh '{user_text}', bạn đợi vài giây nhé...")
             
             base_url = request.host_url.rstrip('/')
             threading.Thread(target=async_handle_image_generation, args=(chat_id, user_text, base_url)).start()
@@ -346,13 +286,12 @@ def webhook():
                 reply_text = generate_gemini_multimodal(prompt, media_file=media_file)
                 send_zalo_message(chat_id, reply_text)
 
-        # 3. XỬ LÝ ĐỌC ÁNH (GỬI TRỰC TIẾP HOẶC TRÍCH DẪN/REPLY)
+        # 3. XỬ LÝ ĐỌC ÁNH NGƯỜI DÙNG GỬI
         elif img_url:
             send_zalo_action(chat_id, "typing")
             media_file = fetch_media_as_base64(img_url, is_image=True)
             if media_file:
-                clean_text = clean_mention(user_text)
-                prompt = clean_text if clean_text else "Hãy phân tích và mô tả chi tiết nội dung bức ảnh này giúp tôi."
+                prompt = user_text.strip() if user_text.strip() else "Hãy phân tích và mô tả chi tiết nội dung bức ảnh này giúp tôi."
                 reply_text = generate_gemini_multimodal(prompt, media_file=media_file)
                 send_zalo_message(chat_id, reply_text)
             else:
@@ -368,8 +307,7 @@ def webhook():
         # 5. CHAT TEXT VĂN BẢN
         elif user_text:
             send_zalo_action(chat_id, "typing")
-            clean_text = clean_mention(user_text)
-            reply_text = generate_gemini_multimodal(clean_text if clean_text else user_text)
+            reply_text = generate_gemini_multimodal(user_text)
             send_zalo_message(chat_id, reply_text)
 
     except Exception as e:
