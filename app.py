@@ -11,29 +11,22 @@ RAW_KEYS = os.getenv("GEMINI_API_KEY", "").strip().strip('"').strip("'")
 GEMINI_API_KEYS = [k.strip() for k in RAW_KEYS.split(",") if k.strip()]
 ZALO_BOT_TOKEN = os.getenv("ZALO_BOT_TOKEN", "").strip().strip('"').strip("'")
 
-# Danh sách toàn bộ các Model khả dụng từ Google AI Studio (Xếp ưu tiên dung lượng cao lên trước)
+# Danh sách đầy đủ các Model Chat / Đa phương thức khả dụng
 ALL_MODELS = [
-    # 1. Nhóm Flash Lite siêu dung lượng (500 tin/ngày - Ưu tiên hàng đầu)
+    # Dung lượng lớn (500 tin/ngày)
     "gemini-3.5-flash-lite",
     "gemini-3.1-flash-lite",
-    "gemini-2.5-flash-lite",
-
-    # 2. Nhóm Flash thế hệ mới (Smart & Fast)
+    
+    # Nhóm Flash tiêu chuẩn (20 tin/ngày)
     "gemini-3.8-flash",
     "gemini-3.6-flash",
     "gemini-3-flash",
     "gemini-2.5-flash",
-    "gemini-2.0-flash",
-
-    # 3. Nhóm Gemma Open Models
+    "gemini-2.5-flash-lite",
+    
+    # Nhóm Gemma Open Models
     "gemma-4-31b-it",
-    "gemma-4-26b-it",
-    "gemma-2-27b-it",
-    "gemma-2-9b-it",
-
-    # 4. Nhóm Gemini tiêu chuẩn dự phòng
-    "gemini-1.5-flash",
-    "gemini-1.5-pro"
+    "gemma-4-26b-it"
 ]
 
 SYSTEM_INSTRUCTION = """
@@ -79,6 +72,45 @@ def send_zalo_message(chat_id, text):
     except Exception as e:
         print(f"Lỗi kết nối sendMessage: {e}")
 
+def send_zalo_photo(chat_id, photo_url, caption=""):
+    """Gửi tin nhắn hình ảnh chuẩn API sendPhoto Zalo"""
+    if not ZALO_BOT_TOKEN:
+        return
+    url = f"https://bot-api.zaloplatforms.com/bot{ZALO_BOT_TOKEN}/sendPhoto"
+    payload = {
+        "chat_id": chat_id,
+        "photo": photo_url,
+        "caption": caption
+    }
+    try:
+        res = requests.post(url, json=payload, timeout=10)
+        if res.status_code != 200:
+            print(f"Lỗi sendPhoto HTTP {res.status_code}: {res.text}")
+    except Exception as e:
+        print(f"Lỗi kết nối sendPhoto: {e}")
+
+def extract_photo_url(data):
+    """Hàm quét tự động tìm URL hình ảnh trong toàn bộ dữ liệu Zalo gửi về"""
+    if isinstance(data, str) and (data.startswith("http://") or data.startswith("https://")):
+        lower_s = data.lower()
+        if any(k in lower_s for k in ['.jpg', '.jpeg', '.png', '.webp', 'zapps', 'zadn', 'photo', 'image']):
+            return data
+    elif isinstance(data, dict):
+        for key in ['url', 'src', 'href', 'photo', 'image', 'link', 'media_url']:
+            val = data.get(key)
+            if isinstance(val, str) and (val.startswith("http://") or val.startswith("https://")):
+                return val
+        for val in data.values():
+            res = extract_photo_url(val)
+            if res:
+                return res
+    elif isinstance(data, list):
+        for item in data:
+            res = extract_photo_url(item)
+            if res:
+                return res
+    return None
+
 def fetch_media_as_base64(url, is_image=False):
     """Tải file Media (Ảnh / Audio) từ Zalo với Header giả lập trình duyệt"""
     try:
@@ -102,7 +134,7 @@ def fetch_media_as_base64(url, is_image=False):
         else:
             print(f"[MEDIA FETCH FAIL] HTTP {res.status_code} - URL: {url}")
     except Exception as e:
-        print(f"[MEDIA FETCH ERROR] Lỗi tải media: {e}")
+        print(f"[MEDIA FETCH ERROR]: {e}")
     return None
 
 def generate_gemini_multimodal(prompt, media_file=None):
@@ -170,48 +202,24 @@ def webhook():
         if not chat_id:
             return jsonify({"status": "no_chat_id"}), 200
 
-        # Lấy văn bản / chú thích ảnh
         user_text = msg_obj.get('text') or msg_obj.get('caption') or ''
         sticker_id = msg_obj.get('sticker') or msg_obj.get('sticker_id')
         voice_url = msg_obj.get('voice_url') or msg_obj.get('voice')
         
-        # Bóc tách URL ảnh chuẩn Zalo Bot Platform mọi cấu trúc
-        img_url = None
-        
-        # 1. Kiểm tra trường 'photo' hoặc 'image' dạng String / Dict / List
-        photo_field = msg_obj.get('photo') or msg_obj.get('image')
-        if isinstance(photo_field, str):
-            img_url = photo_field
-        elif isinstance(photo_field, list) and len(photo_field) > 0:
-            last_p = photo_field[-1]
-            img_url = last_p.get('url') if isinstance(last_p, dict) else (last_p if isinstance(last_p, str) else None)
-        elif isinstance(photo_field, dict):
-            img_url = photo_field.get('url') or photo_field.get('src')
-
-        # 2. Kiểm tra mảng 'attachments'
-        if not img_url:
-            attachments = msg_obj.get('attachments', [])
-            for att in attachments:
-                if isinstance(att, dict):
-                    payload = att.get('payload', {})
-                    p_url = payload.get('url') if isinstance(payload, dict) else None
-                    if att.get('type') in ['image', 'photo'] or p_url or att.get('url'):
-                        img_url = p_url or att.get('url')
-                        break
+        # Quét URL ảnh thông minh
+        img_url = extract_photo_url(msg_obj)
 
         prompt = ""
         media_file = None
 
-        # --- XỬ LÝ THEO CÁC LOẠI TIN NHẮN ZALO ---
-
-        # 1. Tin nhắn Voice (.aac)
+        # 1. Xử lý Voice
         if voice_url:
             send_zalo_action(chat_id, "typing")
             media_file = fetch_media_as_base64(voice_url, is_image=False)
             if media_file:
                 prompt = "Lắng nghe tin nhắn thoại này và phản hồi người dùng bằng văn bản:"
 
-        # 2. Tin nhắn Ảnh
+        # 2. Xử lý Ảnh (dùng hàm extract_photo_url bắt dứt điểm)
         elif img_url:
             send_zalo_action(chat_id, "typing")
             media_file = fetch_media_as_base64(img_url, is_image=True)
@@ -221,17 +229,17 @@ def webhook():
                 send_zalo_message(chat_id, "Tiểu Hy không thể tải được hình ảnh từ Zalo, bạn vui lòng thử gửi lại nhé!")
                 return jsonify({"status": "image_download_failed"}), 200
 
-        # 3. Tin nhắn Sticker
+        # 3. Xử lý Sticker
         elif sticker_id:
             send_zalo_action(chat_id, "typing")
             prompt = f"Người dùng vừa gửi một nhãn dán (sticker) có ID '{sticker_id}'. Hãy phản hồi một câu vui vẻ, dí dỏm đáp lại họ."
 
-        # 4. Tin nhắn Văn bản thuần
+        # 4. Xử lý Chat văn bản
         elif user_text:
             send_zalo_action(chat_id, "typing")
             prompt = user_text
 
-        # Gọi Gemini xử lý và phản hồi Zalo
+        # Gửi Gemini xử lý và phản hồi Zalo
         if prompt:
             reply_text = generate_gemini_multimodal(prompt, media_file=media_file)
             send_zalo_message(chat_id, reply_text)
