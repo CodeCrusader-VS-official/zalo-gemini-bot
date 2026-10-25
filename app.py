@@ -7,8 +7,6 @@ import urllib.parse
 import uuid
 import threading
 import io
-import re
-import time
 from PIL import Image
 
 app = Flask(__name__)
@@ -77,7 +75,7 @@ def send_zalo_message(chat_id, text):
         print(f"Lỗi kết nối sendMessage: {e}")
 
 def send_zalo_photo(chat_id, photo_url, caption=""):
-    """Gửi tin nhắn hình ảnh trực tiếp lên Zalo (Thử lại 2 lần nếu lỗi)"""
+    """Gửi tin nhắn hình ảnh chuẩn API sendPhoto Zalo"""
     if not ZALO_BOT_TOKEN:
         return False
     url = f"https://bot-api.zaloplatforms.com/bot{ZALO_BOT_TOKEN}/sendPhoto"
@@ -86,28 +84,13 @@ def send_zalo_photo(chat_id, photo_url, caption=""):
         "photo": photo_url,
         "caption": caption
     }
-    
-    for attempt in range(2):
-        try:
-            res = requests.post(url, json=payload, timeout=20)
-            print(f"[ZALO sendPhoto LOG - Lần {attempt+1}] HTTP {res.status_code}: {res.text}")
-            if res.status_code == 200 and res.json().get('ok') is True:
-                return True
-        except Exception as e:
-            print(f"Lỗi gửi photo lần {attempt+1}: {e}")
-        time.sleep(1)
-        
+    try:
+        res = requests.post(url, json=payload, timeout=15)
+        print(f"[ZALO sendPhoto LOG] HTTP {res.status_code}: {res.text}")
+        return res.status_code == 200 and res.json().get('ok') is True
+    except Exception as e:
+        print(f"Lỗi kết nối sendPhoto: {e}")
     return False
-
-def clean_user_prompt(text):
-    """Lọc sạch tag @Bot và từ khóa tạo ảnh thừa"""
-    cleaned = re.sub(r'@[^\s]+', '', text)
-    cleaned_lower = cleaned.lower()
-    for kw in ["tạo ảnh", "vẽ ảnh", "vẽ cho tôi", "vẽ cho", "vẽ ", "tạo hình", "draw", "generate image"]:
-        cleaned_lower = cleaned_lower.replace(kw, "")
-    
-    result = cleaned_lower.strip()
-    return result if result else text
 
 def translate_to_english_prompt(text):
     """Dùng Gemini dịch nhanh yêu cầu tạo ảnh sang Tiếng Anh để Pollinations vẽ chính xác"""
@@ -120,28 +103,20 @@ def translate_to_english_prompt(text):
         print(f"Lỗi dịch prompt: {e}")
     return text
 
-def async_handle_image_generation(chat_id, raw_user_text, base_url):
-    """Xử lý tạo ảnh ngầm - Ép gửi trực tiếp hình ảnh, tuyệt đối không gửi URL link"""
+def async_handle_image_generation(chat_id, user_text, base_url):
+    """Xử lý tạo ảnh ngầm và tự động cắt bỏ dải Logo mép dưới"""
     try:
-        clean_text = clean_user_prompt(raw_user_text)
-        en_prompt = translate_to_english_prompt(clean_text)
+        en_prompt = translate_to_english_prompt(user_text)
         encoded_prompt = urllib.parse.quote(en_prompt)
         
-        res = None
-        for attempt in range(2):
-            try:
-                poll_url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=800&height=800&seed={random.randint(1, 999999)}"
-                headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
-                res = requests.get(poll_url, headers=headers, timeout=25)
-                if res.status_code == 200 and res.content:
-                    break
-            except Exception as req_err:
-                print(f"Lần thử {attempt+1} lấy ảnh thất bại: {req_err}")
-
-        if res and res.status_code == 200 and res.content:
+        poll_url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=800&height=800&seed={random.randint(1, 999999)}"
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+        res = requests.get(poll_url, headers=headers, timeout=25)
+        
+        if res.status_code == 200 and res.content:
             final_bytes = res.content
             
-            # Cắt 45px mép dưới xóa logo
+            # Tự động cắt bỏ 45px mép dưới cùng để xóa sạch Watermark/Logo
             try:
                 img = Image.open(io.BytesIO(res.content))
                 width, height = img.size
@@ -159,14 +134,12 @@ def async_handle_image_generation(chat_id, raw_user_text, base_url):
             IMAGE_CACHE[img_id] = final_bytes
             
             photo_cdn_url = f"{base_url}/cdn/{img_id}.jpg"
-            caption_msg = f"Bức ảnh '{clean_text}' của bạn đây nhé!"
+            success = send_zalo_photo(chat_id, photo_cdn_url, caption=f"Bức ảnh '{user_text}' của bạn đây nhé!")
             
-            # Gửi ảnh trực tiếp
-            success = send_zalo_photo(chat_id, photo_cdn_url, caption=caption_msg)
             if not success:
-                send_zalo_message(chat_id, "Tiểu Hy vẽ xong ảnh rồi nhưng kết nối gửi ảnh tới Zalo bị chập chờn. Bạn bấm gửi lại lệnh giúp Tiểu Hy nhé!")
+                send_zalo_message(chat_id, f"Ảnh '{user_text}' đã tạo xong, bạn có thể xem tại đây: {photo_cdn_url}")
         else:
-            send_zalo_message(chat_id, "Server vẽ ảnh hiện đang bận chút, bạn thử bấm gửi lại lệnh xem sao nhé!")
+            send_zalo_message(chat_id, "Tiểu Hy không thể tạo được bức ảnh này lúc này, bạn thử đổi mô tả khác xem sao nhé!")
     except Exception as e:
         print(f"Lỗi tạo ảnh ngầm: {e}")
         send_zalo_message(chat_id, "Rất tiếc, hệ thống tạo ảnh đang gặp sự cố nhỏ. Bạn thử lại sau ít phút nhé!")
@@ -297,9 +270,7 @@ def webhook():
         # 1. XỬ LÝ TẠO ÁNH AI BẤT ĐỒNG BỘ
         if any(kw in text_lower for kw in img_keywords) and not img_url and not voice_url:
             send_zalo_action(chat_id, "typing")
-            
-            clean_display_text = clean_user_prompt(user_text)
-            send_zalo_message(chat_id, f"Tiểu Hy đang vẽ ảnh '{clean_display_text}', bạn đợi vài giây nhé...")
+            send_zalo_message(chat_id, f"Tiểu Hy đang vẽ ảnh '{user_text}', bạn đợi vài giây nhé...")
             
             base_url = request.host_url.rstrip('/')
             threading.Thread(target=async_handle_image_generation, args=(chat_id, user_text, base_url)).start()
