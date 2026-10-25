@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, Response
 import os
 import requests
 import random
@@ -12,7 +12,7 @@ RAW_KEYS = os.getenv("GEMINI_API_KEY", "").strip().strip('"').strip("'")
 GEMINI_API_KEYS = [k.strip() for k in RAW_KEYS.split(",") if k.strip()]
 ZALO_BOT_TOKEN = os.getenv("ZALO_BOT_TOKEN", "").strip().strip('"').strip("'")
 
-# Danh sách Model Chat / Đa phương thức (Text-out)
+# Danh sách Model Chat / Đa phương thức
 ALL_MODELS = [
     "gemini-3.5-flash-lite",
     "gemini-3.1-flash-lite",
@@ -70,7 +70,7 @@ def send_zalo_message(chat_id, text):
 def send_zalo_photo(chat_id, photo_url, caption=""):
     """Gửi tin nhắn hình ảnh chuẩn API sendPhoto Zalo"""
     if not ZALO_BOT_TOKEN:
-        return
+        return False
     url = f"https://bot-api.zaloplatforms.com/bot{ZALO_BOT_TOKEN}/sendPhoto"
     payload = {
         "chat_id": chat_id,
@@ -80,18 +80,13 @@ def send_zalo_photo(chat_id, photo_url, caption=""):
     try:
         res = requests.post(url, json=payload, timeout=15)
         print(f"[ZALO sendPhoto LOG] HTTP {res.status_code}: {res.text}")
-        return res.status_code == 200
+        return res.status_code == 200 and res.json().get('ok') is True
     except Exception as e:
         print(f"Lỗi kết nối sendPhoto: {e}")
     return False
 
-def generate_ai_image_url(prompt_text):
-    """Tạo URL ảnh AI dạng JPG trực tiếp"""
-    encoded_prompt = urllib.parse.quote(prompt_text)
-    return f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=800&height=800&nologo=true"
-
 def extract_photo_url(data):
-    """Quét tự động tìm URL hình ảnh trong toàn bộ dữ liệu Zalo gửi về"""
+    """Quét tự động tìm URL hình ảnh trong dữ liệu Zalo gửi về"""
     if isinstance(data, str) and (data.startswith("http://") or data.startswith("https://")):
         lower_s = data.lower()
         if any(k in lower_s for k in ['.jpg', '.jpeg', '.png', '.webp', 'zapps', 'zadn', 'photo', 'image']):
@@ -122,7 +117,6 @@ def fetch_media_as_base64(url, is_image=False):
         res = requests.get(url, headers=headers, timeout=15, allow_redirects=True)
         if res.status_code == 200 and res.content:
             raw_mime = res.headers.get('Content-Type', '').split(';')[0].strip()
-            
             if is_image:
                 mime_type = raw_mime if raw_mime.startswith('image/') else 'image/jpeg'
             else:
@@ -132,8 +126,6 @@ def fetch_media_as_base64(url, is_image=False):
                 "mime_type": mime_type,
                 "data": base64.b64encode(res.content).decode('utf-8')
             }
-        else:
-            print(f"[MEDIA FETCH FAIL] HTTP {res.status_code} - URL: {url}")
     except Exception as e:
         print(f"[MEDIA FETCH ERROR]: {e}")
     return None
@@ -177,8 +169,6 @@ def generate_gemini_multimodal(prompt, media_file=None):
                             return resp_parts[0].get("text")
                 elif res.status_code in [429, 503, 404]:
                     continue
-                else:
-                    print(f"Model {formatted_model} HTTP {res.status_code}: {res.text}")
             except Exception as e:
                 print(f"Lỗi kết nối {formatted_model}: {e}")
                 continue
@@ -188,6 +178,25 @@ def generate_gemini_multimodal(prompt, media_file=None):
 @app.route('/', methods=['GET'])
 def home():
     return "Zalo Gemini Bot is running!"
+
+@app.route('/image.jpg', methods=['GET'])
+def serve_image():
+    """Tuyến phục vụ ảnh đuôi .jpg chuẩn Zalo API yêu cầu"""
+    prompt = request.args.get('prompt', '')
+    if not prompt:
+        return "Missing prompt", 400
+    
+    encoded_prompt = urllib.parse.quote(prompt)
+    poll_url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=800&height=800&nologo=true&seed={random.randint(1, 999999)}"
+    
+    try:
+        headers = {'User-Agent': 'Mozilla/5.0'}
+        res = requests.get(poll_url, headers=headers, timeout=20)
+        if res.status_code == 200:
+            return Response(res.content, mimetype='image/jpeg')
+    except Exception as e:
+        print(f"Lỗi proxy ảnh: {e}")
+    return "Failed to fetch image", 500
 
 @app.route('/webhook', methods=['POST', 'GET'])
 def webhook():
@@ -210,28 +219,30 @@ def webhook():
         text_lower = user_text.lower().strip()
         img_keywords = ["vẽ ", "tạo ảnh", "tạo hình", "vẽ ảnh", "vẽ cho", "draw ", "generate image"]
 
-        # 1. XỬ LÝ TẠO ÁNH
+        # 1. XỬ LÝ TẠO ÁNH AI
         if any(kw in text_lower for kw in img_keywords) and not img_url and not voice_url:
             send_zalo_action(chat_id, "typing")
             send_zalo_message(chat_id, f"Tiểu Hy đang tạo ảnh '{user_text}', bạn đợi một chút nhé...")
             
-            photo_url = generate_ai_image_url(user_text)
-            success = send_zalo_photo(chat_id, photo_url, caption=f"Ảnh '{user_text}' của bạn đây!")
+            # Tạo link dạng .jpg từ chính server Render của bạn
+            base_url = request.host_url.rstrip('/')
+            encoded_p = urllib.parse.quote(user_text)
+            photo_url = f"{base_url}/image.jpg?prompt={encoded_p}&v={random.randint(100, 999)}"
             
+            success = send_zalo_photo(chat_id, photo_url, caption=f"Ảnh '{user_text}' của bạn đây!")
             if not success:
-                # Fallback gửi link trực tiếp nếu Zalo sendPhoto bị từ chối
-                send_zalo_message(chat_id, f"Bạn có thể xem bức ảnh đã tạo tại đây: {photo_url}")
+                send_zalo_message(chat_id, f"Bạn có thể bấm vào đây để xem ảnh đã tạo nhé: {photo_url}")
 
-        # 2. XỬ LÝ VOICE
+        # 2. XỬ LÝ VOICE (.aac)
         elif voice_url:
             send_zalo_action(chat_id, "typing")
             media_file = fetch_media_as_base64(voice_url, is_image=False)
             if media_file:
-                prompt = "Lắng nghe tin nhắn thoại này và phản hồi người dùng bằng văn bản:"
+                prompt = "Lắng hệ tin nhắn thoại này và phản hồi người dùng bằng văn bản:"
                 reply_text = generate_gemini_multimodal(prompt, media_file=media_file)
                 send_zalo_message(chat_id, reply_text)
 
-        # 3. XỬ LÝ ĐỌC ÁNH
+        # 3. XỬ LÝ ĐỌC ÁNH NGƯỜI DÙNG GỬI
         elif img_url:
             send_zalo_action(chat_id, "typing")
             media_file = fetch_media_as_base64(img_url, is_image=True)
@@ -249,7 +260,7 @@ def webhook():
             reply_text = generate_gemini_multimodal(prompt)
             send_zalo_message(chat_id, reply_text)
 
-        # 5. CHAT TEXT
+        # 5. CHAT TEXT VĂN BẢN
         elif user_text:
             send_zalo_action(chat_id, "typing")
             reply_text = generate_gemini_multimodal(user_text)
