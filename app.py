@@ -6,6 +6,8 @@ import base64
 import urllib.parse
 import uuid
 import threading
+import io
+from PIL import Image
 
 app = Flask(__name__)
 
@@ -102,22 +104,34 @@ def translate_to_english_prompt(text):
     return text
 
 def async_handle_image_generation(chat_id, user_text, base_url):
-    """Xử lý tạo và gửi ảnh chạy ngầm không làm tắc Webhook Zalo"""
+    """Xử lý tạo ảnh ngầm và tự động cắt bỏ dải Logo mép dưới"""
     try:
-        # 1. Dịch mô tả sang tiếng Anh
         en_prompt = translate_to_english_prompt(user_text)
         encoded_prompt = urllib.parse.quote(en_prompt)
         
-        # 2. Gọi Pollinations AI lấy ảnh không chứa logo (model FLUX)
-        poll_url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=800&height=800&nologo=true&nofeed=true&model=flux&seed={random.randint(1, 999999)}"
+        poll_url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=800&height=800&seed={random.randint(1, 999999)}"
         headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
         res = requests.get(poll_url, headers=headers, timeout=25)
         
         if res.status_code == 200 and res.content:
+            final_bytes = res.content
+            
+            # Tự động cắt bỏ 45px mép dưới cùng để xóa sạch Watermark/Logo
+            try:
+                img = Image.open(io.BytesIO(res.content))
+                width, height = img.size
+                if height > 100:
+                    img_cropped = img.crop((0, 0, width, height - 45))
+                    buf = io.BytesIO()
+                    img_cropped.save(buf, format='JPEG', quality=95)
+                    final_bytes = buf.getvalue()
+            except Exception as crop_err:
+                print(f"Lỗi cắt logo ảnh: {crop_err}")
+
             img_id = str(uuid.uuid4())[:8]
             if len(IMAGE_CACHE) > 20:
                 IMAGE_CACHE.pop(next(iter(IMAGE_CACHE)))
-            IMAGE_CACHE[img_id] = res.content
+            IMAGE_CACHE[img_id] = final_bytes
             
             photo_cdn_url = f"{base_url}/cdn/{img_id}.jpg"
             success = send_zalo_photo(chat_id, photo_cdn_url, caption=f"Bức ảnh '{user_text}' của bạn đây nhé!")
