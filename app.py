@@ -108,8 +108,8 @@ def async_handle_image_generation(chat_id, user_text, base_url):
         en_prompt = translate_to_english_prompt(user_text)
         encoded_prompt = urllib.parse.quote(en_prompt)
         
-        # 2. Gọi Pollinations AI lấy ảnh
-        poll_url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=800&height=800&nologo=true&seed={random.randint(1, 999999)}"
+        # 2. Gọi Pollinations AI lấy ảnh không chứa logo (model FLUX)
+        poll_url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=800&height=800&nologo=true&nofeed=true&model=flux&seed={random.randint(1, 999999)}"
         headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
         res = requests.get(poll_url, headers=headers, timeout=25)
         
@@ -258,7 +258,6 @@ def webhook():
             send_zalo_action(chat_id, "typing")
             send_zalo_message(chat_id, f"Tiểu Hy đang vẽ ảnh '{user_text}', bạn đợi vài giây nhé...")
             
-            # Chạy hàm vẽ ảnh trong Thread riêng để không nghẽn Webhook
             base_url = request.host_url.rstrip('/')
             threading.Thread(target=async_handle_image_generation, args=(chat_id, user_text, base_url)).start()
             
