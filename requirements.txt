@@ -2,3 +2,4 @@ flask
 gunicorn
 requests
 python-zalo-bot
+Pillow
