@@ -3,6 +3,7 @@ import os
 import requests
 import random
 import base64
+import urllib.parse
 
 app = Flask(__name__)
 
@@ -11,20 +12,15 @@ RAW_KEYS = os.getenv("GEMINI_API_KEY", "").strip().strip('"').strip("'")
 GEMINI_API_KEYS = [k.strip() for k in RAW_KEYS.split(",") if k.strip()]
 ZALO_BOT_TOKEN = os.getenv("ZALO_BOT_TOKEN", "").strip().strip('"').strip("'")
 
-# Danh sách đầy đủ các Model Chat / Đa phương thức khả dụng
+# Danh sách Model Chat / Đa phương thức
 ALL_MODELS = [
-    # Dung lượng lớn (500 tin/ngày)
     "gemini-3.5-flash-lite",
     "gemini-3.1-flash-lite",
-    
-    # Nhóm Flash tiêu chuẩn (20 tin/ngày)
     "gemini-3.8-flash",
     "gemini-3.6-flash",
     "gemini-3-flash",
     "gemini-2.5-flash",
     "gemini-2.5-flash-lite",
-    
-    # Nhóm Gemma Open Models
     "gemma-4-31b-it",
     "gemma-4-26b-it"
 ]
@@ -32,7 +28,7 @@ ALL_MODELS = [
 SYSTEM_INSTRUCTION = """
 1. DANH TÍNH & VAI TRÒ
 - Tên gọi: Tiểu Hy.
-- Bản chất: Bạn là một trợ lý AI toàn năng, tư duy sắc bén, có khả năng xử lý đa phương thức (văn bản, hình ảnh, giọng nói, sticker).
+- Bản chất: Bạn là một trợ lý AI toàn năng, tư duy sắc bén, có khả năng xử lý đa phương thức (văn bản, hình ảnh, giọng nói, sticker, tạo ảnh).
 - Xưng hô: Tự xưng là "Tiểu Hy" và gọi người dùng là "bạn" (hoặc điều chỉnh linh hoạt theo ngữ cảnh trò chuyện).
 
 2. PHONG CÁCH GIAO TIẾP
@@ -83,14 +79,21 @@ def send_zalo_photo(chat_id, photo_url, caption=""):
         "caption": caption
     }
     try:
-        res = requests.post(url, json=payload, timeout=10)
+        res = requests.post(url, json=payload, timeout=12)
         if res.status_code != 200:
             print(f"Lỗi sendPhoto HTTP {res.status_code}: {res.text}")
     except Exception as e:
         print(f"Lỗi kết nối sendPhoto: {e}")
 
+def generate_ai_image_url(prompt_text):
+    """Tạo URL ảnh AI từ câu mô tả của người dùng bằng Pollinations Engine"""
+    encoded_prompt = urllib.parse.quote(prompt_text)
+    # Tạo ảnh chất lượng cao 1024x1024
+    image_url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=1024&height=1024&nologo=true&seed={random.randint(1, 999999)}"
+    return image_url
+
 def extract_photo_url(data):
-    """Hàm quét tự động tìm URL hình ảnh trong toàn bộ dữ liệu Zalo gửi về"""
+    """Quét tự động tìm URL hình ảnh trong toàn bộ dữ liệu Zalo gửi về"""
     if isinstance(data, str) and (data.startswith("http://") or data.startswith("https://")):
         lower_s = data.lower()
         if any(k in lower_s for k in ['.jpg', '.jpeg', '.png', '.webp', 'zapps', 'zadn', 'photo', 'image']):
@@ -197,7 +200,6 @@ def webhook():
         data = request.get_json() or {}
         msg_obj = data.get('message', {})
         
-        # Bóc tách chat_id chuẩn Zalo API
         chat_id = msg_obj.get('chat', {}).get('id') or msg_obj.get('from', {}).get('id')
         if not chat_id:
             return jsonify({"status": "no_chat_id"}), 200
@@ -205,43 +207,52 @@ def webhook():
         user_text = msg_obj.get('text') or msg_obj.get('caption') or ''
         sticker_id = msg_obj.get('sticker') or msg_obj.get('sticker_id')
         voice_url = msg_obj.get('voice_url') or msg_obj.get('voice')
-        
-        # Quét URL ảnh thông minh
         img_url = extract_photo_url(msg_obj)
 
-        prompt = ""
-        media_file = None
+        # 1. XỬ LÝ YÊU CẦU TẠO ÁNH (Khi câu thoại chứa từ khóa tạo ảnh)
+        text_lower = user_text.lower().strip()
+        img_keywords = ["vẽ ", "tạo ảnh", "tạo hình", "vẽ ảnh", "vẽ cho", "draw ", "generate image", "image of"]
+        
+        if any(kw in text_lower for kw in img_keywords) and not img_url and not voice_url:
+            send_zalo_action(chat_id, "typing")
+            # Tạo URL ảnh AI
+            generated_photo_url = generate_ai_image_url(user_text)
+            caption_msg = f"Bức ảnh theo yêu cầu '{user_text}' của bạn đây nhé!"
+            # Gửi ảnh trực tiếp bằng API sendPhoto của Zalo
+            send_zalo_photo(chat_id, generated_photo_url, caption=caption_msg)
+            return jsonify({"status": "image_generated"}), 200
 
-        # 1. Xử lý Voice
-        if voice_url:
+        # 2. XỬ LÝ VOICE (.aac)
+        elif voice_url:
             send_zalo_action(chat_id, "typing")
             media_file = fetch_media_as_base64(voice_url, is_image=False)
             if media_file:
                 prompt = "Lắng nghe tin nhắn thoại này và phản hồi người dùng bằng văn bản:"
+                reply_text = generate_gemini_multimodal(prompt, media_file=media_file)
+                send_zalo_message(chat_id, reply_text)
 
-        # 2. Xử lý Ảnh (dùng hàm extract_photo_url bắt dứt điểm)
+        # 3. XỬ LÝ ĐỌC ÁNH NGƯỜI DÙNG GỬI
         elif img_url:
             send_zalo_action(chat_id, "typing")
             media_file = fetch_media_as_base64(img_url, is_image=True)
             if media_file:
                 prompt = user_text.strip() if user_text.strip() else "Hãy phân tích và mô tả chi tiết nội dung bức ảnh này giúp tôi."
+                reply_text = generate_gemini_multimodal(prompt, media_file=media_file)
+                send_zalo_message(chat_id, reply_text)
             else:
                 send_zalo_message(chat_id, "Tiểu Hy không thể tải được hình ảnh từ Zalo, bạn vui lòng thử gửi lại nhé!")
-                return jsonify({"status": "image_download_failed"}), 200
 
-        # 3. Xử lý Sticker
+        # 4. XỬ LÝ STICKER
         elif sticker_id:
             send_zalo_action(chat_id, "typing")
             prompt = f"Người dùng vừa gửi một nhãn dán (sticker) có ID '{sticker_id}'. Hãy phản hồi một câu vui vẻ, dí dỏm đáp lại họ."
+            reply_text = generate_gemini_multimodal(prompt)
+            send_zalo_message(chat_id, reply_text)
 
-        # 4. Xử lý Chat văn bản
+        # 5. XỬ LÝ CHAT VĂN BẢN THUẦN
         elif user_text:
             send_zalo_action(chat_id, "typing")
-            prompt = user_text
-
-        # Gửi Gemini xử lý và phản hồi Zalo
-        if prompt:
-            reply_text = generate_gemini_multimodal(prompt, media_file=media_file)
+            reply_text = generate_gemini_multimodal(user_text)
             send_zalo_message(chat_id, reply_text)
 
     except Exception as e:
