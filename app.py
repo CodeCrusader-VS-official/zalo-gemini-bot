@@ -5,6 +5,7 @@ import random
 import base64
 import urllib.parse
 import uuid
+import threading
 
 app = Flask(__name__)
 
@@ -89,33 +90,45 @@ def send_zalo_photo(chat_id, photo_url, caption=""):
         print(f"Lỗi kết nối sendPhoto: {e}")
     return False
 
-def create_and_cache_ai_image(prompt_text, base_url):
-    """Tải ảnh AI về RAM trước, sau đó cấp URL .jpg siêu tốc cho Zalo"""
+def translate_to_english_prompt(text):
+    """Dùng Gemini dịch nhanh yêu cầu tạo ảnh sang Tiếng Anh để Pollinations vẽ chính xác"""
+    prompt = f"Translate the following image description to a clear, concise English image generation prompt (only return the translated text): {text}"
     try:
-        # Lọc sạch từ khóa thừa
-        clean_prompt = prompt_text.lower()
-        for kw in ["tạo ảnh", "vẽ ảnh", "vẽ cho tôi", "vẽ cho", "vẽ ", "tạo hình", "draw"]:
-            clean_prompt = clean_prompt.replace(kw, "")
-        clean_prompt = clean_prompt.strip() or prompt_text
+        res_text = generate_gemini_multimodal(prompt)
+        if res_text and not res_text.startswith("Lỗi") and not res_text.startswith("Tiểu Hy"):
+            return res_text.strip()
+    except Exception as e:
+        print(f"Lỗi dịch prompt: {e}")
+    return text
 
-        encoded_prompt = urllib.parse.quote(clean_prompt)
-        poll_url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=800&height=800&nologo=true&seed={random.randint(1, 999999)}"
+def async_handle_image_generation(chat_id, user_text, base_url):
+    """Xử lý tạo và gửi ảnh chạy ngầm không làm tắc Webhook Zalo"""
+    try:
+        # 1. Dịch mô tả sang tiếng Anh
+        en_prompt = translate_to_english_prompt(user_text)
+        encoded_prompt = urllib.parse.quote(en_prompt)
         
+        # 2. Gọi Pollinations AI lấy ảnh
+        poll_url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=800&height=800&nologo=true&seed={random.randint(1, 999999)}"
         headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
         res = requests.get(poll_url, headers=headers, timeout=25)
         
         if res.status_code == 200 and res.content:
             img_id = str(uuid.uuid4())[:8]
-            
-            # Xóa bớt cache cũ nếu đầy
             if len(IMAGE_CACHE) > 20:
                 IMAGE_CACHE.pop(next(iter(IMAGE_CACHE)))
-                
             IMAGE_CACHE[img_id] = res.content
-            return f"{base_url}/cdn/{img_id}.jpg"
+            
+            photo_cdn_url = f"{base_url}/cdn/{img_id}.jpg"
+            success = send_zalo_photo(chat_id, photo_cdn_url, caption=f"Bức ảnh '{user_text}' của bạn đây nhé!")
+            
+            if not success:
+                send_zalo_message(chat_id, f"Ảnh '{user_text}' đã tạo xong, bạn có thể xem tại đây: {photo_cdn_url}")
+        else:
+            send_zalo_message(chat_id, "Tiểu Hy không thể tạo được bức ảnh này lúc này, bạn thử đổi mô tả khác xem sao nhé!")
     except Exception as e:
-        print(f"Lỗi tạo ảnh AI: {e}")
-    return None
+        print(f"Lỗi tạo ảnh ngầm: {e}")
+        send_zalo_message(chat_id, "Rất tiếc, hệ thống tạo ảnh đang gặp sự cố nhỏ. Bạn thử lại sau ít phút nhé!")
 
 def extract_photo_url(data):
     """Quét tự động tìm URL hình ảnh trong dữ liệu Zalo gửi về"""
@@ -240,17 +253,16 @@ def webhook():
         text_lower = user_text.lower().strip()
         img_keywords = ["vẽ ", "tạo ảnh", "tạo hình", "vẽ ảnh", "vẽ cho", "draw ", "generate image"]
 
-        # 1. XỬ LÝ TẠO ÁNH AI (Tự động tải về RAM rồi gửi ảnh trực tiếp)
+        # 1. XỬ LÝ TẠO ÁNH AI BẤT ĐỒNG BỘ
         if any(kw in text_lower for kw in img_keywords) and not img_url and not voice_url:
             send_zalo_action(chat_id, "typing")
+            send_zalo_message(chat_id, f"Tiểu Hy đang vẽ ảnh '{user_text}', bạn đợi vài giây nhé...")
             
+            # Chạy hàm vẽ ảnh trong Thread riêng để không nghẽn Webhook
             base_url = request.host_url.rstrip('/')
-            photo_cdn_url = create_and_cache_ai_image(user_text, base_url)
+            threading.Thread(target=async_handle_image_generation, args=(chat_id, user_text, base_url)).start()
             
-            if photo_cdn_url:
-                send_zalo_photo(chat_id, photo_cdn_url, caption=f"Bức ảnh theo yêu cầu '{user_text}' của bạn đây nhé!")
-            else:
-                send_zalo_message(chat_id, "Tiểu Hy không thể tạo được bức ảnh này lúc này, bạn thử đổi mô tả khác xem sao nhé!")
+            return jsonify({"status": "processing_image"}), 200
 
         # 2. XỬ LÝ VOICE (.aac)
         elif voice_url:
