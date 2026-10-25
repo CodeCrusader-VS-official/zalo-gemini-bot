@@ -173,37 +173,40 @@ def async_handle_image_generation(chat_id, raw_user_text, base_url):
         send_zalo_message(chat_id, "Rất tiếc, hệ thống tạo ảnh đang gặp sự cố nhỏ. Bạn thử lại sau ít phút nhé!")
 
 def extract_photo_url(data):
-    """Quét đệ quy thông minh tìm URL ảnh, loại trừ Avatar và hỗ trợ tên miền Zalo zdn.vn"""
+    """Lấy đúng URL ảnh tin nhắn/trích dẫn, loại trừ triệt để Avatar người dùng"""
     if not data:
         return None
 
+    # 1. Nếu data là chuỗi URL
     if isinstance(data, str) and (data.startswith("http://") or data.startswith("https://")):
         lower_s = data.lower()
-        valid_keywords = ['.jpg', '.jpeg', '.png', '.webp', 'zapps', 'zadn', 'zdn', 'photo', 'image', 'thumb', 'cdn', 'media']
-        if any(k in lower_s for k in valid_keywords):
-            return data
+        # Loại bỏ các URL Avatar hoặc Profile
+        if any(bad in lower_s for bad in ['avatar', 'profile', 'icon', 'default_user', 'ava-talk', 'zaloprofile']):
+            return None
+        return data
 
+    # 2. Nếu data là dict
     elif isinstance(data, dict):
-        ignored_keys = ['avatar', 'avatar_url', 'profile', 'user_avatar', 'chat_avatar', 'icon']
-        photo_keys = ['photo', 'image', 'thumb', 'thumbnail', 'preview', 'cdn', 'url', 'src', 'href', 'media_url']
-        
-        for key in photo_keys:
-            if key in ignored_keys:
-                continue
-            val = data.get(key)
-            if isinstance(val, str) and (val.startswith("http://") or val.startswith("https://")):
-                lower_v = val.lower()
-                valid_keywords = ['.jpg', '.jpeg', '.png', '.webp', 'zapps', 'zadn', 'zdn', 'photo', 'image', 'thumb', 'cdn', 'media']
-                if any(k in lower_v for k in valid_keywords):
-                    return val
+        user_info_keys = ['sender', 'from', 'user', 'recipient', 'author', 'profile', 'member']
+        photo_keys = ['photo', 'image', 'thumb', 'thumbnail', 'preview', 'cdn', 'url', 'src', 'href', 'media_url', 'attachment', 'attachments', 'payload']
 
+        # Bước A: Thử lấy trực tiếp các key ảnh
+        for key in photo_keys:
+            if key in data:
+                val = data[key]
+                res = extract_photo_url(val)
+                if res:
+                    return res
+
+        # Bước B: Đệ quy vào các key còn lại (bỏ qua thông tin cá nhân/avatar)
         for key, val in data.items():
-            if key in ignored_keys:
+            if key.lower() in user_info_keys or any(u in key.lower() for u in ['avatar', 'profile', 'user']):
                 continue
             res = extract_photo_url(val)
             if res:
                 return res
 
+    # 3. Nếu data là list
     elif isinstance(data, list):
         for item in data:
             res = extract_photo_url(item)
@@ -299,9 +302,8 @@ def webhook():
 
     try:
         data = request.get_json() or {}
-        print(f"[WEBHOOK INCOMING LOG]: {data}")
-        
         msg_obj = data.get('message', {})
+        
         chat_id = msg_obj.get('chat', {}).get('id') or msg_obj.get('from', {}).get('id')
         if not chat_id:
             return jsonify({"status": "no_chat_id"}), 200
@@ -310,8 +312,15 @@ def webhook():
         sticker_id = msg_obj.get('sticker') or msg_obj.get('sticker_id')
         voice_url = msg_obj.get('voice_url') or msg_obj.get('voice')
         
-        # Quét ưu tiên trong tin nhắn & trích dẫn trước
-        img_url = extract_photo_url(msg_obj) or extract_photo_url(data)
+        # BƯỚC QUAN TRỌNG: Ưu tiên bóc ảnh trong nhánh trích dẫn (quote) trước
+        quote_obj = msg_obj.get('quote') or msg_obj.get('quote_message') or msg_obj.get('reply_to') or data.get('quote')
+        img_url = extract_photo_url(quote_obj) if quote_obj else None
+        
+        # Nếu không có quote, mới tìm trong tin nhắn chính
+        if not img_url:
+            img_url = extract_photo_url(msg_obj)
+        if not img_url:
+            img_url = extract_photo_url(data)
 
         text_lower = user_text.lower().strip()
         img_keywords = ["vẽ ", "tạo ảnh", "tạo hình", "vẽ ảnh", "vẽ cho", "draw ", "generate image"]
