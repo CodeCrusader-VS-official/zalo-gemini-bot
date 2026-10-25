@@ -98,14 +98,18 @@ def send_zalo_photo(chat_id, photo_url, caption=""):
     return False
 
 def clean_mention(text):
-    """Lọc sạch mọi thẻ @mention (@Bot, @Bot Tiểu Hy, @...) khỏi câu lệnh"""
+    """Lọc sạch tag @Bot Tiểu Hy / @Tiểu Hy khi có dấu @. Giữ nguyên chữ 'tiểu hy' thường"""
     if not text:
         return ""
-    cleaned = re.sub(r'@[^\s]+', '', text)
+    # 1. Ưu tiên xóa cụm tag có dấu @ kèm tên Bot (không phân biệt hoa thường)
+    cleaned = re.sub(r'@bot\s+tiểu\s+hy\b', '', text, flags=re.IGNORECASE)
+    cleaned = re.sub(r'@tiểu\s+hy\b', '', cleaned, flags=re.IGNORECASE)
+    # 2. Xóa các thẻ @mention đơn còn lại nếu có (ví dụ: @Bot, @Phong...)
+    cleaned = re.sub(r'@[^\s]+', '', cleaned)
     return cleaned.strip()
 
 def clean_image_prompt(text):
-    """Lọc sạch @mention và các từ khóa lệnh tạo ảnh thừa để gửi prompt nguyên chất cho AI vẽ"""
+    """Lọc sạch cụm tag @Bot và từ khóa lệnh vẽ ảnh để thu được prompt sạch cho AI"""
     cleaned = clean_mention(text)
     cleaned_lower = cleaned.lower()
     for kw in ["tạo ảnh", "vẽ ảnh", "vẽ cho tôi", "vẽ cho", "vẽ ", "tạo hình", "draw", "generate image"]:
@@ -126,7 +130,7 @@ def translate_to_english_prompt(text):
     return text
 
 def async_handle_image_generation(chat_id, raw_user_text, base_url):
-    """Xử lý tạo ảnh ngầm - Đã lọc sạch @Bot và từ khóa lệnh"""
+    """Xử lý tạo ảnh ngầm - Lọc sạch cụm @Bot Tiểu Hy trước khi gửi AI"""
     try:
         clean_prompt_text = clean_image_prompt(raw_user_text)
         en_prompt = translate_to_english_prompt(clean_prompt_text)
@@ -168,7 +172,7 @@ def async_handle_image_generation(chat_id, raw_user_text, base_url):
             
             success = send_zalo_photo(chat_id, photo_cdn_url, caption=caption_msg)
             if not success:
-                send_zalo_message(chat_id, "Tiểu Hy vẽ xong ảnh rồi nhưng kết nối gửi ảnh tới Zalo bị chập chờn. Bạn bấm gửi lại lệnh giúp Tiểu Hy nhé!")
+                send_zalo_message(chat_id, f"Ảnh '{clean_prompt_text}' đã tạo xong, bạn có thể xem tại đây: {photo_cdn_url}")
         else:
             send_zalo_message(chat_id, "Server vẽ ảnh hiện đang bận chút, bạn thử bấm gửi lại lệnh xem sao nhé!")
     except Exception as e:
@@ -306,13 +310,12 @@ def webhook():
             return jsonify({"status": "no_chat_id"}), 200
 
         raw_user_text = msg_obj.get('text') or msg_obj.get('caption') or ''
-        # SỬA QUAN TRỌNG: Lọc sạch thẻ @Bot khỏi văn bản người dùng nhập vào ngay từ đầu
         user_text = clean_mention(raw_user_text)
 
         sticker_id = msg_obj.get('sticker') or msg_obj.get('sticker_id')
         voice_url = msg_obj.get('voice_url') or msg_obj.get('voice')
         
-        # Bóc tách ảnh ưu tiên từ nhánh trích dẫn (Quote/Reply) trước, sau đó đến tin nhắn chính
+        # Bóc tách ảnh ưu tiên từ nhánh trích dẫn (Quote/Reply) trước
         quote_obj = msg_obj.get('quote') or msg_obj.get('quote_message') or msg_obj.get('reply_to') or data.get('quote')
         img_url = extract_photo_url(quote_obj) if quote_obj else None
         
