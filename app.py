@@ -13,20 +13,27 @@ ZALO_BOT_TOKEN = os.getenv("ZALO_BOT_TOKEN", "").strip().strip('"').strip("'")
 
 # Danh sách toàn bộ các Model khả dụng từ Google AI Studio (Xếp ưu tiên dung lượng cao lên trước)
 ALL_MODELS = [
-    # Nhóm Flash Lite siêu dung lượng (500 tin/ngày)
+    # 1. Nhóm Flash Lite siêu dung lượng (500 tin/ngày - Ưu tiên hàng đầu)
     "gemini-3.5-flash-lite",
     "gemini-3.1-flash-lite",
-    
-    # Nhóm Flash tiêu chuẩn (20 tin/ngày)
+    "gemini-2.5-flash-lite",
+
+    # 2. Nhóm Flash thế hệ mới (Smart & Fast)
     "gemini-3.8-flash",
     "gemini-3.6-flash",
     "gemini-3-flash",
     "gemini-2.5-flash",
-    "gemini-2.5-flash-lite",
-    
-    # Nhóm Gemma Open Models
+    "gemini-2.0-flash",
+
+    # 3. Nhóm Gemma Open Models
     "gemma-4-31b-it",
-    "gemma-4-26b-it"
+    "gemma-4-26b-it",
+    "gemma-2-27b-it",
+    "gemma-2-9b-it",
+
+    # 4. Nhóm Gemini tiêu chuẩn dự phòng
+    "gemini-1.5-flash",
+    "gemini-1.5-pro"
 ]
 
 SYSTEM_INSTRUCTION = """
